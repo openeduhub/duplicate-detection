@@ -1,0 +1,21 @@
+# FastAPI and server
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+pydantic>=2.5.0
+
+# HTTP client
+requests>=2.31.0
+tenacity>=8.2.0
+
+# Embedding model
+sentence-transformers>=2.2.0
+
+# Numpy for similarity computation
+numpy>=1.24.0
+
+# Utilities
+loguru>=0.7.0
+python-dotenv>=1.0.0
+
+# Rate Limiting
+slowapi>=0.1.9
