@@ -25,6 +25,9 @@ from app.models import (
     EmbeddingBatchRequest,
     EmbeddingResponse,
     EmbeddingBatchResponse,
+    EnrichmentInfo,
+    resolve_url_redirect,
+    normalize_url,
 )
 from app.wlo_client import WLOClient
 from app.hash_detector import hash_detector
@@ -183,6 +186,151 @@ def build_candidate_stats(search_info: dict, field_similarities: dict = None) ->
     return stats
 
 
+def enrich_metadata_from_candidates(
+    metadata: ContentMetadata,
+    candidates: dict,
+    client: WLOClient
+) -> tuple[ContentMetadata, EnrichmentInfo]:
+    """
+    Enrich sparse source metadata by fetching full metadata from a matching candidate.
+    
+    This is useful when only URL or title is provided - we find a matching node
+    and use its metadata to expand the candidate search.
+    
+    Args:
+        metadata: Original source metadata (possibly sparse)
+        candidates: Dict of search_field -> candidate nodes from initial search
+        client: WLO client for fetching node metadata
+        
+    Returns:
+        Tuple of (enriched_metadata, enrichment_info)
+    """
+    enrichment_info = EnrichmentInfo(enriched=False)
+    
+    # Check if metadata is already complete (has title AND (description OR keywords))
+    has_title = bool(metadata.title and metadata.title.strip() and metadata.title.strip().lower() != "string")
+    has_description = bool(metadata.description and metadata.description.strip() and metadata.description.strip().lower() != "string")
+    has_keywords = bool(metadata.keywords and any(k and k.strip() and k.strip().lower() != "string" for k in metadata.keywords))
+    
+    # If we already have title + at least one other field, no need to enrich
+    if has_title and (has_description or has_keywords):
+        logger.debug("Metadata already complete, skipping enrichment")
+        return metadata, enrichment_info
+    
+    # Find best candidate for enrichment - prefer URL exact match, then title match
+    enrichment_node_id = None
+    enrichment_field = None
+    
+    # Normalize source URLs for matching
+    source_norm_url = normalize_url(metadata.url)
+    source_norm_redirect = normalize_url(metadata.redirect_url) if metadata.redirect_url else None
+    
+    # First, look for URL exact match
+    if "url" in candidates:
+        for candidate in candidates["url"]:
+            node_id = candidate.get("ref", {}).get("id")
+            if not node_id:
+                continue
+            
+            properties = candidate.get("properties", {})
+            candidate_url = None
+            for key in ["ccm:wwwurl", "cclom:location"]:
+                if key in properties:
+                    val = properties[key]
+                    candidate_url = val[0] if isinstance(val, list) else val
+                    break
+            
+            candidate_norm_url = normalize_url(candidate_url)
+            
+            # Check if URLs match (original or redirect)
+            if candidate_norm_url:
+                if (source_norm_url and source_norm_url == candidate_norm_url) or \
+                   (source_norm_redirect and source_norm_redirect == candidate_norm_url):
+                    enrichment_node_id = node_id
+                    enrichment_field = "url"
+                    logger.info(f"Found URL match for enrichment: {node_id}")
+                    break
+    
+    # If no URL match, look for title match
+    if not enrichment_node_id and "title" in candidates and has_title:
+        source_title_lower = metadata.title.strip().lower()
+        for candidate in candidates["title"]:
+            node_id = candidate.get("ref", {}).get("id")
+            if not node_id:
+                continue
+            
+            properties = candidate.get("properties", {})
+            candidate_title = None
+            for key in ["cclom:title", "cm:name"]:
+                if key in properties:
+                    val = properties[key]
+                    candidate_title = val[0] if isinstance(val, list) else val
+                    break
+            
+            if candidate_title and candidate_title.strip().lower() == source_title_lower:
+                enrichment_node_id = node_id
+                enrichment_field = "title"
+                logger.info(f"Found title match for enrichment: {node_id}")
+                break
+    
+    # If no enrichment source found, return original metadata
+    if not enrichment_node_id:
+        logger.debug("No suitable candidate found for metadata enrichment")
+        return metadata, enrichment_info
+    
+    # Fetch full metadata from the enrichment source
+    node_data = client.get_node_metadata(enrichment_node_id)
+    if not node_data:
+        logger.warning(f"Failed to fetch metadata for enrichment from node {enrichment_node_id}")
+        return metadata, enrichment_info
+    
+    enrichment_metadata = client.extract_content_metadata(node_data, resolve_redirects=False)
+    
+    # Merge: add fields that are missing in source
+    fields_added = []
+    enriched_title = metadata.title
+    enriched_description = metadata.description
+    enriched_keywords = metadata.keywords
+    enriched_url = metadata.url
+    enriched_redirect_url = metadata.redirect_url
+    
+    if not has_title and enrichment_metadata.title:
+        enriched_title = enrichment_metadata.title
+        fields_added.append("title")
+    
+    if not has_description and enrichment_metadata.description:
+        enriched_description = enrichment_metadata.description
+        fields_added.append("description")
+    
+    if not has_keywords and enrichment_metadata.keywords:
+        enriched_keywords = enrichment_metadata.keywords
+        fields_added.append("keywords")
+    
+    # Add URL if we don't have one
+    if not metadata.url and enrichment_metadata.url:
+        enriched_url = enrichment_metadata.url
+        fields_added.append("url")
+    
+    if fields_added:
+        enriched = ContentMetadata(
+            title=enriched_title,
+            description=enriched_description,
+            keywords=enriched_keywords,
+            url=enriched_url,
+            redirect_url=enriched_redirect_url
+        )
+        enrichment_info = EnrichmentInfo(
+            enriched=True,
+            enrichment_source_node_id=enrichment_node_id,
+            enrichment_source_field=enrichment_field,
+            fields_added=fields_added
+        )
+        logger.info(f"Enriched metadata from node {enrichment_node_id} ({enrichment_field}): added {fields_added}")
+        return enriched, enrichment_info
+    
+    return metadata, enrichment_info
+
+
 # ============================================================================
 # Health Check
 # ============================================================================
@@ -253,6 +401,33 @@ async def detect_hash_by_node(request: Request, body: HashDetectionRequest):
         exclude_node_id=body.node_id
     )
     
+    # Enrich metadata from candidates if enabled (usually no-op for node lookups)
+    enrichment_info = None
+    if body.enrich_from_candidates:
+        metadata, enrichment_info = enrich_metadata_from_candidates(metadata, candidates, client)
+        
+        # If enriched, re-search with all fields to expand candidate pool
+        if enrichment_info.enriched:
+            logger.info(f"Re-searching with enriched metadata (added: {enrichment_info.fields_added})")
+            all_fields = [SearchField.TITLE, SearchField.DESCRIPTION, SearchField.KEYWORDS, SearchField.URL]
+            enriched_candidates, enriched_search_info = client.search_candidates(
+                metadata=metadata,
+                search_fields=all_fields,
+                max_candidates=body.max_candidates,
+                exclude_node_id=body.node_id
+            )
+            for field, field_candidates in enriched_candidates.items():
+                if field not in candidates:
+                    candidates[field] = field_candidates
+                else:
+                    existing_ids = {c.get("ref", {}).get("id") for c in candidates[field]}
+                    for c in field_candidates:
+                        if c.get("ref", {}).get("id") not in existing_ids:
+                            candidates[field].append(c)
+            for field, info in enriched_search_info.items():
+                if field not in search_info:
+                    search_info[field] = info
+    
     total_candidates = count_candidates(candidates)
     
     # Find duplicates
@@ -270,6 +445,7 @@ async def detect_hash_by_node(request: Request, body: HashDetectionRequest):
         source_metadata=metadata,
         method="hash",
         threshold=body.similarity_threshold,
+        enrichment=enrichment_info,
         candidate_search_results=candidate_stats,
         total_candidates_checked=total_candidates,
         duplicates=duplicates
@@ -307,19 +483,61 @@ async def detect_hash_by_metadata(request: Request, body: HashMetadataRequest):
             error="No searchable content provided (need at least title, description, keywords, or URL)"
         )
     
+    # Resolve URL redirects if URL is provided and no redirect_url set yet
+    metadata = body.metadata
+    if metadata.url and not metadata.redirect_url:
+        final_url, was_redirected = resolve_url_redirect(metadata.url)
+        if was_redirected and final_url:
+            metadata = ContentMetadata(
+                title=metadata.title,
+                description=metadata.description,
+                keywords=metadata.keywords,
+                url=metadata.url,
+                redirect_url=final_url
+            )
+            logger.info(f"Resolved redirect for input URL: {metadata.url[:50]}... -> {final_url[:50]}...")
+    
     # Search for candidates
     client = WLOClient(environment=body.environment)
     candidates, search_info = client.search_candidates(
-        metadata=body.metadata,
+        metadata=metadata,
         search_fields=body.search_fields,
         max_candidates=body.max_candidates
     )
+    
+    # Enrich metadata from candidates if enabled
+    enrichment_info = None
+    if body.enrich_from_candidates:
+        metadata, enrichment_info = enrich_metadata_from_candidates(metadata, candidates, client)
+        
+        # If enriched, re-search with all fields to expand candidate pool
+        if enrichment_info.enriched:
+            logger.info(f"Re-searching with enriched metadata (added: {enrichment_info.fields_added})")
+            all_fields = [SearchField.TITLE, SearchField.DESCRIPTION, SearchField.KEYWORDS, SearchField.URL]
+            enriched_candidates, enriched_search_info = client.search_candidates(
+                metadata=metadata,
+                search_fields=all_fields,
+                max_candidates=body.max_candidates
+            )
+            # Merge candidates (enriched search may find more)
+            for field, field_candidates in enriched_candidates.items():
+                if field not in candidates:
+                    candidates[field] = field_candidates
+                else:
+                    existing_ids = {c.get("ref", {}).get("id") for c in candidates[field]}
+                    for c in field_candidates:
+                        if c.get("ref", {}).get("id") not in existing_ids:
+                            candidates[field].append(c)
+            # Merge search info
+            for field, info in enriched_search_info.items():
+                if field not in search_info:
+                    search_info[field] = info
     
     total_candidates = count_candidates(candidates)
     
     # Find duplicates
     duplicates, field_similarities = hash_detector.find_duplicates(
-        source_metadata=body.metadata,
+        source_metadata=metadata,
         candidates=candidates,
         threshold=body.similarity_threshold
     )
@@ -328,9 +546,10 @@ async def detect_hash_by_metadata(request: Request, body: HashMetadataRequest):
     
     return DetectionResponse(
         success=True,
-        source_metadata=body.metadata,
+        source_metadata=metadata,
         method="hash",
         threshold=body.similarity_threshold,
+        enrichment=enrichment_info,
         candidate_search_results=candidate_stats,
         total_candidates_checked=total_candidates,
         duplicates=duplicates
@@ -387,6 +606,32 @@ async def detect_embedding_by_node(request: Request, body: EmbeddingDetectionReq
         exclude_node_id=body.node_id
     )
     
+    # Enrich metadata from candidates if enabled (usually no-op for node lookups)
+    enrichment_info = None
+    if body.enrich_from_candidates:
+        metadata, enrichment_info = enrich_metadata_from_candidates(metadata, candidates, client)
+        
+        if enrichment_info.enriched:
+            logger.info(f"Re-searching with enriched metadata (added: {enrichment_info.fields_added})")
+            all_fields = [SearchField.TITLE, SearchField.DESCRIPTION, SearchField.KEYWORDS, SearchField.URL]
+            enriched_candidates, enriched_search_info = client.search_candidates(
+                metadata=metadata,
+                search_fields=all_fields,
+                max_candidates=body.max_candidates,
+                exclude_node_id=body.node_id
+            )
+            for field, field_candidates in enriched_candidates.items():
+                if field not in candidates:
+                    candidates[field] = field_candidates
+                else:
+                    existing_ids = {c.get("ref", {}).get("id") for c in candidates[field]}
+                    for c in field_candidates:
+                        if c.get("ref", {}).get("id") not in existing_ids:
+                            candidates[field].append(c)
+            for field, info in enriched_search_info.items():
+                if field not in search_info:
+                    search_info[field] = info
+    
     total_candidates = count_candidates(candidates)
     
     # Find duplicates
@@ -414,6 +659,7 @@ async def detect_embedding_by_node(request: Request, body: EmbeddingDetectionReq
         source_metadata=metadata,
         method="embedding",
         threshold=body.similarity_threshold,
+        enrichment=enrichment_info,
         candidate_search_results=candidate_stats,
         total_candidates_checked=total_candidates,
         duplicates=duplicates
@@ -454,27 +700,66 @@ async def detect_embedding_by_metadata(request: Request, body: EmbeddingMetadata
             error="No searchable content provided (need at least title, description, keywords, or URL)"
         )
     
+    # Resolve URL redirects if URL is provided and no redirect_url set yet
+    metadata = body.metadata
+    if metadata.url and not metadata.redirect_url:
+        final_url, was_redirected = resolve_url_redirect(metadata.url)
+        if was_redirected and final_url:
+            metadata = ContentMetadata(
+                title=metadata.title,
+                description=metadata.description,
+                keywords=metadata.keywords,
+                url=metadata.url,
+                redirect_url=final_url
+            )
+            logger.info(f"Resolved redirect for input URL: {metadata.url[:50]}... -> {final_url[:50]}...")
+    
     # Search for candidates
     client = WLOClient(environment=body.environment)
     candidates, search_info = client.search_candidates(
-        metadata=body.metadata,
+        metadata=metadata,
         search_fields=body.search_fields,
         max_candidates=body.max_candidates
     )
+    
+    # Enrich metadata from candidates if enabled
+    enrichment_info = None
+    if body.enrich_from_candidates:
+        metadata, enrichment_info = enrich_metadata_from_candidates(metadata, candidates, client)
+        
+        if enrichment_info.enriched:
+            logger.info(f"Re-searching with enriched metadata (added: {enrichment_info.fields_added})")
+            all_fields = [SearchField.TITLE, SearchField.DESCRIPTION, SearchField.KEYWORDS, SearchField.URL]
+            enriched_candidates, enriched_search_info = client.search_candidates(
+                metadata=metadata,
+                search_fields=all_fields,
+                max_candidates=body.max_candidates
+            )
+            for field, field_candidates in enriched_candidates.items():
+                if field not in candidates:
+                    candidates[field] = field_candidates
+                else:
+                    existing_ids = {c.get("ref", {}).get("id") for c in candidates[field]}
+                    for c in field_candidates:
+                        if c.get("ref", {}).get("id") not in existing_ids:
+                            candidates[field].append(c)
+            for field, info in enriched_search_info.items():
+                if field not in search_info:
+                    search_info[field] = info
     
     total_candidates = count_candidates(candidates)
     
     # Find duplicates
     try:
         duplicates, field_similarities = embedding_detector.find_duplicates(
-            source_metadata=body.metadata,
+            source_metadata=metadata,
             candidates=candidates,
             threshold=body.similarity_threshold
         )
     except RuntimeError as e:
         return DetectionResponse(
             success=False,
-            source_metadata=body.metadata,
+            source_metadata=metadata,
             method="embedding",
             threshold=body.similarity_threshold,
             error=str(e)
@@ -484,9 +769,10 @@ async def detect_embedding_by_metadata(request: Request, body: EmbeddingMetadata
     
     return DetectionResponse(
         success=True,
-        source_metadata=body.metadata,
+        source_metadata=metadata,
         method="embedding",
         threshold=body.similarity_threshold,
+        enrichment=enrichment_info,
         candidate_search_results=candidate_stats,
         total_candidates_checked=total_candidates,
         duplicates=duplicates

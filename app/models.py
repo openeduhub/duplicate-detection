@@ -1,9 +1,11 @@
 """Pydantic models for WLO Duplicate Detection API."""
 
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 from urllib.parse import urlparse, urlunparse
 from pydantic import BaseModel, Field
 from enum import Enum
+import requests
+from loguru import logger
 
 from app.config import Environment
 
@@ -333,6 +335,58 @@ def _generate_youtube_variants(url: str, parsed) -> List[str]:
     return variants
 
 
+def resolve_url_redirect(url: Optional[str], timeout: int = 10) -> Tuple[Optional[str], bool]:
+    """
+    Resolve URL redirects by following the redirect chain.
+    
+    Args:
+        url: URL to resolve
+        timeout: Request timeout in seconds
+        
+    Returns:
+        Tuple of (final_url, was_redirected)
+        - final_url: The URL after following all redirects, or None on error
+        - was_redirected: True if URL was redirected to a different location
+    """
+    if not url or not url.strip():
+        return None, False
+    
+    url = url.strip()
+    
+    # Skip non-http URLs
+    if not url.startswith(('http://', 'https://')):
+        return None, False
+    
+    try:
+        # Use HEAD request to check for redirects (faster, no content download)
+        response = requests.head(
+            url, 
+            allow_redirects=True, 
+            timeout=timeout,
+            headers={'User-Agent': 'Mozilla/5.0 (compatible; WLO-Duplicate-Detector/1.0)'}
+        )
+        
+        final_url = response.url
+        
+        # Check if we were redirected
+        was_redirected = final_url != url and normalize_url(final_url) != normalize_url(url)
+        
+        if was_redirected:
+            logger.info(f"URL redirect detected: {url[:60]}... -> {final_url[:60]}...")
+        
+        return final_url, was_redirected
+        
+    except requests.exceptions.TooManyRedirects:
+        logger.warning(f"Too many redirects for URL: {url[:60]}...")
+        return None, False
+    except requests.exceptions.Timeout:
+        logger.warning(f"Timeout resolving redirect for URL: {url[:60]}...")
+        return None, False
+    except requests.exceptions.RequestException as e:
+        logger.debug(f"Could not resolve redirect for URL {url[:60]}...: {e}")
+        return None, False
+
+
 class SearchField(str, Enum):
     """Available metadata fields for candidate search."""
     TITLE = "title"
@@ -347,11 +401,26 @@ class ContentMetadata(BaseModel):
     description: Optional[str] = Field(default=None, description="Description text")
     keywords: Optional[List[str]] = Field(default=None, description="List of keywords")
     url: Optional[str] = Field(default=None, description="Content URL (ccm:wwwurl)")
+    redirect_url: Optional[str] = Field(default=None, description="Resolved redirect URL (if different from url)")
     
     @property
     def normalized_url(self) -> Optional[str]:
         """Get normalized URL for duplicate matching."""
         return normalize_url(self.url)
+    
+    @property
+    def normalized_redirect_url(self) -> Optional[str]:
+        """Get normalized redirect URL for duplicate matching."""
+        return normalize_url(self.redirect_url)
+    
+    def get_all_urls(self) -> List[str]:
+        """Get all URLs (original + redirect) for searching."""
+        urls = []
+        if self.url:
+            urls.append(self.url)
+        if self.redirect_url and self.redirect_url != self.url:
+            urls.append(self.redirect_url)
+        return urls
     
     def get_searchable_text(self) -> str:
         """Get combined searchable text from all fields."""
@@ -395,6 +464,10 @@ class DetectionRequest(BaseModel):
         ge=1,
         le=1000,
         description="Maximum candidates per search field (pagination used if > 100)"
+    )
+    enrich_from_candidates: bool = Field(
+        default=True,
+        description="If true, enrich sparse metadata from first URL/title match to expand candidate search"
     )
 
 
@@ -460,6 +533,14 @@ class CandidateStats(BaseModel):
     normalized_count: Optional[int] = Field(default=None, description="Additional candidates from normalized search")
 
 
+class EnrichmentInfo(BaseModel):
+    """Information about metadata enrichment from candidates."""
+    enriched: bool = Field(default=False, description="Whether metadata was enriched from candidates")
+    enrichment_source_node_id: Optional[str] = Field(default=None, description="Node ID used for enrichment")
+    enrichment_source_field: Optional[str] = Field(default=None, description="Field that triggered enrichment (url or title)")
+    fields_added: List[str] = Field(default_factory=list, description="Fields that were added from enrichment")
+
+
 class DetectionResponse(BaseModel):
     """Response from duplicate detection."""
     success: bool = Field(default=True)
@@ -467,6 +548,7 @@ class DetectionResponse(BaseModel):
     source_metadata: Optional[ContentMetadata] = Field(default=None, description="Metadata used for detection")
     method: str = Field(..., description="Detection method used (hash or embedding)")
     threshold: float = Field(..., description="Similarity threshold used")
+    enrichment: Optional[EnrichmentInfo] = Field(default=None, description="Metadata enrichment details")
     candidate_search_results: List[CandidateStats] = Field(
         default_factory=list, 
         description="Candidates found per search field"

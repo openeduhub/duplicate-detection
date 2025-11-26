@@ -7,7 +7,7 @@ from urllib3.util.retry import Retry
 from loguru import logger
 
 from app.config import Environment, wlo_config
-from app.models import ContentMetadata, SearchField, normalize_title, normalize_url, generate_url_search_variants
+from app.models import ContentMetadata, SearchField, normalize_title, normalize_url, generate_url_search_variants, resolve_url_redirect
 
 
 class WLOClient:
@@ -69,12 +69,13 @@ class WLOClient:
             logger.error(f"Failed to fetch metadata for node {node_id}: {e}")
             return None
     
-    def extract_content_metadata(self, node_data: Dict[str, Any]) -> ContentMetadata:
+    def extract_content_metadata(self, node_data: Dict[str, Any], resolve_redirects: bool = True) -> ContentMetadata:
         """
         Extract relevant metadata fields from node data.
         
         Args:
             node_data: Raw node data from API
+            resolve_redirects: Whether to resolve URL redirects
             
         Returns:
             ContentMetadata with extracted fields
@@ -111,11 +112,20 @@ class WLOClient:
                 url = val[0] if isinstance(val, list) else val
                 break
         
+        # Resolve URL redirects
+        redirect_url = None
+        if url and resolve_redirects:
+            final_url, was_redirected = resolve_url_redirect(url)
+            if was_redirected and final_url:
+                redirect_url = final_url
+                logger.info(f"Resolved redirect: {url[:50]}... -> {redirect_url[:50]}...")
+        
         return ContentMetadata(
             title=title,
             description=description,
             keywords=keywords,
-            url=url
+            url=url,
+            redirect_url=redirect_url
         )
     
     def search_by_ngsearch(
@@ -294,11 +304,21 @@ class WLOClient:
                 field_candidates.extend(results)
                 
             elif field == SearchField.URL and self._is_valid_search_value(metadata.url):
-                # Generate all URL variants to search
-                url_variants = generate_url_search_variants(metadata.url)
+                # Get all URLs to search (original + redirect if available)
+                all_urls = metadata.get_all_urls()
+                
+                # Generate all URL variants to search (from all URLs)
+                url_variants = set()
+                for u in all_urls:
+                    url_variants.update(generate_url_search_variants(u))
+                url_variants = list(url_variants)
+                
                 normalized = normalize_url(metadata.url)
                 
-                logger.info(f"Searching URL with {len(url_variants)} variants")
+                has_redirect = metadata.redirect_url is not None
+                if has_redirect:
+                    logger.info(f"Searching URL with redirect: {metadata.url[:40]}... -> {metadata.redirect_url[:40]}...")
+                logger.info(f"Searching URL with {len(url_variants)} variants (redirect={has_redirect})")
                 
                 # Search with original URL first (exact match in ccm:wwwurl)
                 results = self.search_by_ngsearch("ccm:wwwurl", metadata.url, max_candidates)
@@ -306,12 +326,25 @@ class WLOClient:
                 field_candidates.extend(results)
                 existing_ids = {c.get("ref", {}).get("id") for c in field_candidates}
                 
+                # Search with redirect URL in ccm:wwwurl if available
+                redirect_count = 0
+                if metadata.redirect_url:
+                    redirect_results = self.search_by_ngsearch("ccm:wwwurl", metadata.redirect_url, max_candidates)
+                    for result in redirect_results:
+                        node_id = result.get("ref", {}).get("id")
+                        if node_id and node_id not in existing_ids:
+                            field_candidates.append(result)
+                            existing_ids.add(node_id)
+                            redirect_count += 1
+                    if redirect_count > 0:
+                        logger.info(f"Redirect URL added {redirect_count} new candidates")
+                
                 # Search with all variants in ngsearchword
                 variant_count = 0
                 searched_variants = []
                 for variant in url_variants:
-                    if variant == metadata.url:
-                        continue  # Skip original, already searched
+                    if variant == metadata.url or variant == metadata.redirect_url:
+                        continue  # Skip URLs already searched
                     
                     variant_results = self.search_by_ngsearch("ngsearchword", variant, max_candidates // 2)
                     new_in_variant = 0
@@ -330,6 +363,8 @@ class WLOClient:
                     logger.info(f"URL variants added {variant_count} new candidates")
                 
                 search_value = f"{metadata.url} ({len(url_variants)} variants)"
+                if metadata.redirect_url:
+                    search_value = f"{metadata.url} -> {metadata.redirect_url} ({len(url_variants)} variants)"
                 
                 # Filter out the source node
                 if exclude_node_id:
@@ -345,11 +380,13 @@ class WLOClient:
                     "count": len(field_candidates),
                     "original_search": metadata.url,
                     "original_count": original_count,
+                    "redirect_url": metadata.redirect_url,
+                    "redirect_count": redirect_count,
                     "normalized_search": normalized if normalized else None,
                     "normalized_count": variant_count,
                     "variants_searched": len(url_variants)
                 }
-                logger.info(f"Field 'url': original={original_count}, variants=+{variant_count}, total={len(field_candidates)}")
+                logger.info(f"Field 'url': original={original_count}, redirect=+{redirect_count}, variants=+{variant_count}, total={len(field_candidates)}")
                 continue  # Skip the default processing
             
             # Filter out the source node

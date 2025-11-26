@@ -307,17 +307,25 @@ class EmbeddingDetector:
         duplicates = []
         field_max_similarity: Dict[str, float] = {}
         
-        # Get normalized source URL for matching
+        # Get normalized source URL for matching (including redirect URL)
         source_norm_url = normalize_url(source_metadata.url)
+        source_norm_redirect = normalize_url(source_metadata.redirect_url) if source_metadata.redirect_url else None
         
         for search_field, items in field_candidates_data.items():
             field_max = 0.0
             
             for node_id, title, description, keywords, url, text in items:
                 # Check for URL match first (normalized URLs)
+                # Compare both original URL and redirect URL from source
                 candidate_norm_url = normalize_url(url)
-                url_match = (source_norm_url and candidate_norm_url and 
-                            source_norm_url == candidate_norm_url)
+                
+                url_match = False
+                if candidate_norm_url:
+                    # Match if candidate URL equals original or redirect URL
+                    if source_norm_url and source_norm_url == candidate_norm_url:
+                        url_match = True
+                    elif source_norm_redirect and source_norm_redirect == candidate_norm_url:
+                        url_match = True
                 
                 if url_match:
                     # Exact URL match = definite duplicate
