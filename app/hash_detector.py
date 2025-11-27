@@ -189,7 +189,7 @@ class MinHashDetector:
         # Determine which fields are available in source
         has_title = self._is_valid_field(source_metadata.title)
         has_description = self._is_valid_field(source_metadata.description)
-        has_keywords = self._is_valid_field(source_metadata.keywords)
+        has_keywords = False
         
         # Build source text from available fields only
         source_parts = []
@@ -197,10 +197,9 @@ class MinHashDetector:
             source_parts.append(source_metadata.title)
         if has_description:
             source_parts.append(source_metadata.description)
-        if has_keywords:
-            valid_kw = [k for k in source_metadata.keywords if k and k.strip().lower() != "string"]
-            source_parts.extend(valid_kw)
         
+        logger.debug(f"Source data: {source_parts}")
+
         source_text = " ".join(source_parts)
         source_sig = self.compute_text_signature(source_text)
         
@@ -208,7 +207,7 @@ class MinHashDetector:
             logger.warning("Could not compute signature for source metadata")
             return [], {}
         
-        logger.info(f"Source fields: title={has_title}, description={has_description}, keywords={has_keywords}")
+        logger.info(f"Source fields: title={has_title}, description={has_description}")
         
         # Track seen node IDs to avoid duplicates
         seen_ids = set()
@@ -242,10 +241,6 @@ class MinHashDetector:
                         break
                 
                 keywords = None
-                if "cclom:general_keyword" in properties:
-                    kw = properties["cclom:general_keyword"]
-                    keywords = kw if isinstance(kw, list) else [kw]
-                
                 url = None
                 for key in ["ccm:wwwurl", "cclom:location"]:
                     if key in properties:
@@ -282,6 +277,7 @@ class MinHashDetector:
                     if has_keywords and keywords:
                         candidate_parts.extend(keywords)
                     
+                    logger.debug(f"Candidate data: {candidate_parts}")
                     candidate_text = " ".join(candidate_parts)
                     candidate_sig = self.compute_text_signature(candidate_text)
                     
