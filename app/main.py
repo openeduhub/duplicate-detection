@@ -38,7 +38,7 @@ from app.config import detection_config
 logger.remove()
 logger.add(
     sys.stderr, 
-    level="INFO", 
+    level="DEBUG", 
     format="{time:YYYY-MM-DD HH:mm:ss} | {level:<8} | {message}",
     colorize=True
 )

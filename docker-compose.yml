@@ -11,7 +11,7 @@ services:
       # EMBEDDING_MODEL: sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
       
       # Optional: Log level
-      LOG_LEVEL: INFO
+      LOG_LEVEL: DEBUG
     volumes:
       # Optional: Mount cache directory for model persistence
       - model-cache:/home/appuser/.cache
