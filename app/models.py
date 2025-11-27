@@ -52,7 +52,7 @@ def normalize_title(title: Optional[str]) -> Optional[str]:
         normalized = re.sub(pattern, '', normalized, flags=re.IGNORECASE)
     
     normalized = normalized.strip()
-    normalized = normalized.replace('&', '')
+    normalized = normalized.replace('&', ' ')
     normalized = normalized.replace('  ', ' ')
     logger.debug(f"Normalized title: '{normalized}'")
     
