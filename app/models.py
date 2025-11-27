@@ -394,7 +394,6 @@ class SearchField(str, Enum):
     """Available metadata fields for candidate search."""
     TITLE = "title"
     DESCRIPTION = "description"
-    KEYWORDS = "keywords"
     URL = "url"
 
 
@@ -459,7 +458,7 @@ class DetectionRequest(BaseModel):
         description="WLO environment (production or staging)"
     )
     search_fields: List[SearchField] = Field(
-        default=[SearchField.TITLE, SearchField.DESCRIPTION, SearchField.KEYWORDS, SearchField.URL],
+        default=[SearchField.TITLE, SearchField.DESCRIPTION, SearchField.URL],
         description="Metadata fields to use for candidate search"
     )
     max_candidates: int = Field(

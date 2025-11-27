@@ -49,7 +49,7 @@ class DetectionConfig(BaseModel):
     # Candidate search
     max_candidates_per_search: int = Field(default=100)
     default_search_fields: list[str] = Field(
-        default=["title", "description", "keywords", "url"]
+        default=["title", "description", "url"]
     )
     
     @property

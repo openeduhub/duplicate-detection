@@ -295,14 +295,7 @@ class WLOClient:
                 search_value = metadata.description[:100] if len(metadata.description) > 100 else metadata.description
                 results = self.search_by_ngsearch("ngsearchword", search_value, max_candidates)
                 field_candidates.extend(results)
-                
-            elif field == SearchField.KEYWORDS and self._is_valid_keywords(metadata.keywords):
-                # Search by combined keywords (filter out placeholders)
-                valid_keywords = [k for k in metadata.keywords if k and k.strip().lower() != "string"]
-                search_value = " ".join(valid_keywords[:5])  # Limit to first 5 keywords
-                results = self.search_by_ngsearch("ngsearchword", search_value, max_candidates)
-                field_candidates.extend(results)
-                
+                   
             elif field == SearchField.URL and self._is_valid_search_value(metadata.url):
                 # Get all URLs to search (original + redirect if available)
                 all_urls = metadata.get_all_urls()
