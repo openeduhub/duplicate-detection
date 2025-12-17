@@ -53,11 +53,116 @@ def normalize_title(title: Optional[str]) -> Optional[str]:
     
     normalized = normalized.strip()
     
+    # Additional normalizations from Manuel's improvements
+    normalized = normalized.replace('&', ' ')  # Replace & with space
+    normalized = ' '.join(normalized.split())  # Normalize whitespace (multiple spaces -> single)
+    
+    if normalized and normalized != title:
+        logger.debug(f"Normalized title: '{title}' -> '{normalized}'")
+    
     # Return None if normalized is empty or same as original
     if not normalized:
         return None
     
     return normalized if normalized != title else None
+
+
+def _normalize_umlauts(text: str) -> str:
+    """Convert German umlauts to ASCII equivalents."""
+    umlaut_map = {
+        'ä': 'ae', 'ö': 'oe', 'ü': 'ue',
+        'Ä': 'Ae', 'Ö': 'Oe', 'Ü': 'Ue',
+        'ß': 'ss'
+    }
+    for umlaut, replacement in umlaut_map.items():
+        text = text.replace(umlaut, replacement)
+    return text
+
+
+def generate_title_search_variants(title: Optional[str]) -> List[str]:
+    """
+    Generate title variants for candidate search.
+    
+    WLO Elastic Search has known issues:
+    - No lemmatization: "energieeffiziente" != "energieeffizienter" != "energieeffizient"
+    - Case-sensitive: "Mathematik" != "mathematik"
+    - Umlaut handling: "Übung" might be stored as "Uebung"
+    
+    This function generates multiple search variants to increase match probability.
+    
+    Returns:
+        List of unique title variants to search with
+    """
+    if not title or not title.strip():
+        return []
+    
+    variants = set()
+    title = title.strip()
+    
+    # Add original title
+    variants.add(title)
+    
+    # Add lowercase variant (WLO is case-sensitive)
+    variants.add(title.lower())
+    
+    # Get normalized version (without suffixes like "- Wikipedia")
+    normalized = normalize_title(title)
+    if normalized:
+        variants.add(normalized)
+        variants.add(normalized.lower())
+    
+    # Base for further processing
+    base_title = normalized.lower() if normalized else title.lower()
+    
+    # Umlaut variants (ä→ae, ö→oe, ü→ue, ß→ss)
+    umlaut_normalized = _normalize_umlauts(base_title)
+    if umlaut_normalized != base_title:
+        variants.add(umlaut_normalized)
+    
+    # Hyphen variants (remove hyphens, replace with space)
+    if '-' in base_title:
+        variants.add(base_title.replace('-', ' '))
+        variants.add(base_title.replace('-', ''))
+    
+    # Variant without special characters (only alphanumeric and spaces)
+    import re
+    alphanumeric_only = re.sub(r'[^a-zA-Z0-9äöüßÄÖÜ\s]', ' ', base_title)
+    alphanumeric_only = ' '.join(alphanumeric_only.split())  # normalize spaces
+    if alphanumeric_only and alphanumeric_only != base_title:
+        variants.add(alphanumeric_only)
+        # Also without umlauts
+        variants.add(_normalize_umlauts(alphanumeric_only))
+    
+    # German adjective ending variants
+    # Common endings: -e, -er, -es, -en, -em (plus combinations)
+    german_adj_endings = ['e', 'er', 'es', 'en', 'em']
+    
+    # Find words that might be adjectives (words ending with these suffixes)
+    words = base_title.split()
+    
+    for i, word in enumerate(words):
+        # Skip very short words
+        if len(word) < 4:
+            continue
+        
+        # Check if word ends with German adjective suffix
+        for ending in german_adj_endings:
+            if word.endswith(ending) and len(word) > len(ending) + 2:
+                # Create variant with ending removed (base form)
+                base_word = word[:-len(ending)]
+                
+                # Only if base word is reasonable (min 3 chars)
+                if len(base_word) >= 3:
+                    # Generate variants with different endings
+                    for new_ending in ['', 'e', 'er', 'es', 'en']:
+                        new_words = words.copy()
+                        new_words[i] = base_word + new_ending
+                        variant = ' '.join(new_words)
+                        variants.add(variant)
+                break  # Only process first matching ending per word
+    
+    # Remove empty strings and return unique list
+    return [v for v in variants if v and v.strip()]
 
 
 def normalize_url(url: Optional[str]) -> Optional[str]:
@@ -456,8 +561,8 @@ class DetectionRequest(BaseModel):
         description="WLO environment (production or staging)"
     )
     search_fields: List[SearchField] = Field(
-        default=[SearchField.TITLE, SearchField.DESCRIPTION, SearchField.KEYWORDS, SearchField.URL],
-        description="Metadata fields to use for candidate search"
+        default=[SearchField.TITLE, SearchField.DESCRIPTION, SearchField.URL],
+        description="Metadata fields to use for candidate search (keywords available but not in default)"
     )
     max_candidates: int = Field(
         default=100,
@@ -541,6 +646,15 @@ class EnrichmentInfo(BaseModel):
     fields_added: List[str] = Field(default_factory=list, description="Fields that were added from enrichment")
 
 
+class TimingInfo(BaseModel):
+    """Timing information for each processing step."""
+    metadata_fetch_ms: Optional[float] = Field(default=None, description="Time to fetch metadata from WLO (ms)")
+    candidate_search_ms: Optional[float] = Field(default=None, description="Time for candidate search (ms)")
+    enrichment_ms: Optional[float] = Field(default=None, description="Time for metadata enrichment (ms)")
+    similarity_calculation_ms: Optional[float] = Field(default=None, description="Time for similarity calculation (ms)")
+    total_ms: Optional[float] = Field(default=None, description="Total processing time (ms)")
+
+
 class DetectionResponse(BaseModel):
     """Response from duplicate detection."""
     success: bool = Field(default=True)
@@ -549,6 +663,7 @@ class DetectionResponse(BaseModel):
     method: str = Field(..., description="Detection method used (hash or embedding)")
     threshold: float = Field(..., description="Similarity threshold used")
     enrichment: Optional[EnrichmentInfo] = Field(default=None, description="Metadata enrichment details")
+    timing: Optional[TimingInfo] = Field(default=None, description="Processing time breakdown per step")
     candidate_search_results: List[CandidateStats] = Field(
         default_factory=list, 
         description="Candidates found per search field"
@@ -595,4 +710,32 @@ class EmbeddingBatchResponse(BaseModel):
     dimensions: int = Field(..., description="Number of dimensions per embedding")
     count: int = Field(..., description="Number of embeddings returned")
     model: str = Field(..., description="Model used for embedding")
+    error: Optional[str] = Field(default=None)
+
+
+class HashRequest(BaseModel):
+    """Request for MinHash signature generation."""
+    text: str = Field(..., description="Text to generate hash signature for", min_length=1)
+
+
+class HashBatchRequest(BaseModel):
+    """Request for batch MinHash signature generation."""
+    texts: List[str] = Field(..., description="List of texts to hash", min_length=1)
+
+
+class HashResponse(BaseModel):
+    """Response with MinHash signature."""
+    success: bool = Field(default=True)
+    text: str = Field(..., description="Input text")
+    signature: List[int] = Field(..., description="MinHash signature (array of hash values)")
+    num_hashes: int = Field(..., description="Number of hash functions used")
+    error: Optional[str] = Field(default=None)
+
+
+class HashBatchResponse(BaseModel):
+    """Response with multiple MinHash signatures."""
+    success: bool = Field(default=True)
+    signatures: List[List[int]] = Field(..., description="List of MinHash signatures")
+    num_hashes: int = Field(..., description="Number of hash functions per signature")
+    count: int = Field(..., description="Number of signatures returned")
     error: Optional[str] = Field(default=None)

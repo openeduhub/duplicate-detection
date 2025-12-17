@@ -1,13 +1,14 @@
 """WLO API client for fetching content metadata and searching."""
 
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Tuple
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from loguru import logger
 
 from app.config import Environment, wlo_config
-from app.models import ContentMetadata, SearchField, normalize_title, normalize_url, generate_url_search_variants, resolve_url_redirect
+from app.models import ContentMetadata, SearchField, normalize_title, normalize_url, generate_url_search_variants, generate_title_search_variants, resolve_url_redirect
 
 
 class WLOClient:
@@ -230,6 +231,7 @@ class WLOClient:
     ) -> tuple[Dict[str, List[Dict[str, Any]]], Dict[str, dict]]:
         """
         Search for duplicate candidates using specified metadata fields.
+        ALL searches (including variants) are executed in PARALLEL with 10 workers.
         
         Args:
             metadata: Content metadata to search with
@@ -242,166 +244,123 @@ class WLOClient:
             - Dict mapping search field to list of candidate nodes
             - Dict mapping search field to search info (search_value, count)
         """
+        # Collect all search tasks: (field, search_property, search_value, max_results, is_variant)
+        search_tasks = []
+        
+        # Title searches
+        if SearchField.TITLE in search_fields and self._is_valid_search_value(metadata.title):
+            title_variants = generate_title_search_variants(metadata.title)
+            # Original title search
+            search_tasks.append(("title", "ngsearchword", metadata.title, max_candidates, False))
+            # Variant searches
+            for variant in title_variants:
+                if variant != metadata.title:
+                    search_tasks.append(("title", "ngsearchword", variant, max_candidates // 2, True))
+        
+        # Description search
+        if SearchField.DESCRIPTION in search_fields and self._is_valid_search_value(metadata.description):
+            search_value = metadata.description[:100] if len(metadata.description) > 100 else metadata.description
+            search_tasks.append(("description", "ngsearchword", search_value, max_candidates, False))
+        
+        # Keywords search
+        if SearchField.KEYWORDS in search_fields and self._is_valid_keywords(metadata.keywords):
+            valid_keywords = [k for k in metadata.keywords if k and k.strip().lower() != "string"]
+            search_value = " ".join(valid_keywords[:5])
+            search_tasks.append(("keywords", "ngsearchword", search_value, max_candidates, False))
+        
+        # URL searches
+        if SearchField.URL in search_fields and self._is_valid_search_value(metadata.url):
+            # Original URL (exact match)
+            search_tasks.append(("url", "ccm:wwwurl", metadata.url, max_candidates, False))
+            # Redirect URL if available
+            if metadata.redirect_url:
+                search_tasks.append(("url", "ccm:wwwurl", metadata.redirect_url, max_candidates, False))
+            # URL variants
+            all_urls = metadata.get_all_urls()
+            url_variants = set()
+            for u in all_urls:
+                url_variants.update(generate_url_search_variants(u))
+            for variant in url_variants:
+                if variant != metadata.url and variant != metadata.redirect_url:
+                    search_tasks.append(("url", "ngsearchword", variant, max_candidates // 2, True))
+        
+        logger.info(f"Executing {len(search_tasks)} search tasks with 10 parallel workers")
+        
+        # Execute all searches in parallel with 10 workers
+        results_by_field: Dict[str, List[Dict]] = {f.value: [] for f in search_fields}
+        field_stats: Dict[str, dict] = {}
+        
+        def execute_search(task):
+            field, prop, value, max_res, is_variant = task
+            results = self.search_by_ngsearch(prop, value, max_res)
+            return field, results, is_variant, value
+        
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            futures = [executor.submit(execute_search, task) for task in search_tasks]
+            
+            for future in as_completed(futures):
+                try:
+                    field, results, is_variant, search_value = future.result()
+                    results_by_field[field].extend(results)
+                except Exception as e:
+                    logger.error(f"Search task failed: {e}")
+        
+        # Deduplicate within each field and build stats
         candidates: Dict[str, List[Dict[str, Any]]] = {}
         search_info: Dict[str, dict] = {}
         
         for field in search_fields:
-            field_candidates = []
-            search_value = None
+            field_name = field.value
+            all_results = results_by_field.get(field_name, [])
             
+            # Deduplicate by node_id within field
+            seen_ids = set()
+            unique_candidates = []
+            for result in all_results:
+                node_id = result.get("ref", {}).get("id")
+                if node_id and node_id not in seen_ids:
+                    if node_id != exclude_node_id:
+                        seen_ids.add(node_id)
+                        unique_candidates.append(result)
+            
+            candidates[field_name] = unique_candidates
+            
+            # Build search info
             if field == SearchField.TITLE and self._is_valid_search_value(metadata.title):
-                # Search by original title using ngsearchword
-                search_value = metadata.title
-                results = self.search_by_ngsearch("ngsearchword", metadata.title, max_candidates)
-                original_count = len(results)
-                field_candidates.extend(results)
-                normalized_count = 0
-                
-                # Also search by normalized title (removes suffixes like "- Wikipedia")
+                title_variants = generate_title_search_variants(metadata.title)
                 normalized = normalize_title(metadata.title)
-                if normalized and normalized != metadata.title:
-                    logger.info(f"Also searching normalized title: '{normalized}'")
-                    normalized_results = self.search_by_ngsearch("ngsearchword", normalized, max_candidates)
-                    # Add only new candidates (avoid duplicates)
-                    existing_ids = {c.get("ref", {}).get("id") for c in field_candidates}
-                    for result in normalized_results:
-                        if result.get("ref", {}).get("id") not in existing_ids:
-                            field_candidates.append(result)
-                            normalized_count += 1
-                    search_value = f"{metadata.title} → {normalized}"
-                
-                # Filter out the source node
-                if exclude_node_id:
-                    field_candidates = [
-                        c for c in field_candidates 
-                        if c.get("ref", {}).get("id") != exclude_node_id
-                    ]
-                
-                candidates[field.value] = field_candidates
-                # Store detailed search info
-                search_info[field.value] = {
-                    "search_value": search_value,
-                    "count": len(field_candidates),
+                search_info[field_name] = {
+                    "search_value": f"{metadata.title} ({len(title_variants)} variants)",
+                    "count": len(unique_candidates),
                     "original_search": metadata.title,
-                    "original_count": original_count,
                     "normalized_search": normalized if normalized else None,
-                    "normalized_count": normalized_count
+                    "variants_searched": len(title_variants)
                 }
-                logger.info(f"Field 'title': original={original_count}, normalized=+{normalized_count}, total={len(field_candidates)}")
-                continue  # Skip the default processing
-                
-            elif field == SearchField.DESCRIPTION and self._is_valid_search_value(metadata.description):
-                # Search by description - use first 100 chars for efficiency
-                search_value = metadata.description[:100] if len(metadata.description) > 100 else metadata.description
-                results = self.search_by_ngsearch("ngsearchword", search_value, max_candidates)
-                field_candidates.extend(results)
-                
-            elif field == SearchField.KEYWORDS and self._is_valid_keywords(metadata.keywords):
-                # Search by combined keywords (filter out placeholders)
-                valid_keywords = [k for k in metadata.keywords if k and k.strip().lower() != "string"]
-                search_value = " ".join(valid_keywords[:5])  # Limit to first 5 keywords
-                results = self.search_by_ngsearch("ngsearchword", search_value, max_candidates)
-                field_candidates.extend(results)
-                
-            elif field == SearchField.URL and self._is_valid_search_value(metadata.url):
-                # Get all URLs to search (original + redirect if available)
+            elif field == SearchField.DESCRIPTION:
+                search_value = metadata.description[:100] if metadata.description and len(metadata.description) > 100 else (metadata.description or "")
+                search_info[field_name] = {"search_value": search_value, "count": len(unique_candidates)}
+            elif field == SearchField.KEYWORDS:
+                valid_keywords = [k for k in (metadata.keywords or []) if k and k.strip().lower() != "string"]
+                search_info[field_name] = {"search_value": " ".join(valid_keywords[:5]), "count": len(unique_candidates)}
+            elif field == SearchField.URL:
                 all_urls = metadata.get_all_urls()
-                
-                # Generate all URL variants to search (from all URLs)
                 url_variants = set()
                 for u in all_urls:
                     url_variants.update(generate_url_search_variants(u))
-                url_variants = list(url_variants)
-                
                 normalized = normalize_url(metadata.url)
-                
-                has_redirect = metadata.redirect_url is not None
-                if has_redirect:
-                    logger.info(f"Searching URL with redirect: {metadata.url[:40]}... -> {metadata.redirect_url[:40]}...")
-                logger.info(f"Searching URL with {len(url_variants)} variants (redirect={has_redirect})")
-                
-                # Search with original URL first (exact match in ccm:wwwurl)
-                results = self.search_by_ngsearch("ccm:wwwurl", metadata.url, max_candidates)
-                original_count = len(results)
-                field_candidates.extend(results)
-                existing_ids = {c.get("ref", {}).get("id") for c in field_candidates}
-                
-                # Search with redirect URL in ccm:wwwurl if available
-                redirect_count = 0
-                if metadata.redirect_url:
-                    redirect_results = self.search_by_ngsearch("ccm:wwwurl", metadata.redirect_url, max_candidates)
-                    for result in redirect_results:
-                        node_id = result.get("ref", {}).get("id")
-                        if node_id and node_id not in existing_ids:
-                            field_candidates.append(result)
-                            existing_ids.add(node_id)
-                            redirect_count += 1
-                    if redirect_count > 0:
-                        logger.info(f"Redirect URL added {redirect_count} new candidates")
-                
-                # Search with all variants in ngsearchword
-                variant_count = 0
-                searched_variants = []
-                for variant in url_variants:
-                    if variant == metadata.url or variant == metadata.redirect_url:
-                        continue  # Skip URLs already searched
-                    
-                    variant_results = self.search_by_ngsearch("ngsearchword", variant, max_candidates // 2)
-                    new_in_variant = 0
-                    for result in variant_results:
-                        node_id = result.get("ref", {}).get("id")
-                        if node_id and node_id not in existing_ids:
-                            field_candidates.append(result)
-                            existing_ids.add(node_id)
-                            variant_count += 1
-                            new_in_variant += 1
-                    
-                    if new_in_variant > 0:
-                        searched_variants.append(variant[:30])
-                
-                if variant_count > 0:
-                    logger.info(f"URL variants added {variant_count} new candidates")
-                
                 search_value = f"{metadata.url} ({len(url_variants)} variants)"
                 if metadata.redirect_url:
                     search_value = f"{metadata.url} -> {metadata.redirect_url} ({len(url_variants)} variants)"
-                
-                # Filter out the source node
-                if exclude_node_id:
-                    field_candidates = [
-                        c for c in field_candidates 
-                        if c.get("ref", {}).get("id") != exclude_node_id
-                    ]
-                
-                candidates[field.value] = field_candidates
-                # Store detailed search info
-                search_info[field.value] = {
+                search_info[field_name] = {
                     "search_value": search_value,
-                    "count": len(field_candidates),
+                    "count": len(unique_candidates),
                     "original_search": metadata.url,
-                    "original_count": original_count,
                     "redirect_url": metadata.redirect_url,
-                    "redirect_count": redirect_count,
                     "normalized_search": normalized if normalized else None,
-                    "normalized_count": variant_count,
                     "variants_searched": len(url_variants)
                 }
-                logger.info(f"Field 'url': original={original_count}, redirect=+{redirect_count}, variants=+{variant_count}, total={len(field_candidates)}")
-                continue  # Skip the default processing
             
-            # Filter out the source node
-            if exclude_node_id:
-                field_candidates = [
-                    c for c in field_candidates 
-                    if c.get("ref", {}).get("id") != exclude_node_id
-                ]
-            
-            candidates[field.value] = field_candidates
-            search_info[field.value] = {
-                "search_value": search_value,
-                "count": len(field_candidates)
-            }
-            logger.info(f"Field '{field.value}': searched with '{search_value[:50] if search_value else 'N/A'}...', found {len(field_candidates)} candidates")
+            logger.info(f"Field '{field_name}': {len(unique_candidates)} unique candidates")
         
         # Deduplicate candidates across all fields
         candidates, dedup_stats = self._deduplicate_candidates(candidates)

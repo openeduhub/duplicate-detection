@@ -195,11 +195,11 @@ class EmbeddingDetector:
     ) -> tuple[List[DuplicateCandidate], Dict[str, float]]:
         """
         Find duplicates among candidates using embeddings.
-        Compares only the same fields that are present in source_metadata.
+        Compares only the same fields that are present in source_metadata AND were searched.
         
         Args:
             source_metadata: Source content metadata
-            candidates: Dict of search_field -> candidate nodes
+            candidates: Dict of search_field -> candidate nodes (keys indicate which fields were searched)
             threshold: Minimum similarity threshold
             
         Returns:
@@ -209,10 +209,15 @@ class EmbeddingDetector:
         """
         threshold = threshold or detection_config.default_embedding_threshold
         
+        # Determine which fields were actually searched (from candidates keys)
+        searched_fields = set(candidates.keys())
+        
         # Determine which fields are available in source
+        # Title and description are always used for scoring (if available)
+        # Keywords only count if they were explicitly requested in search_fields
         has_title = self._is_valid_field(source_metadata.title)
         has_description = self._is_valid_field(source_metadata.description)
-        has_keywords = self._is_valid_field(source_metadata.keywords)
+        has_keywords = self._is_valid_field(source_metadata.keywords) and "keywords" in searched_fields
         
         # Build source text from available fields only
         source_parts = []
@@ -225,6 +230,7 @@ class EmbeddingDetector:
             source_parts.extend(valid_kw)
         
         source_text = " ".join(source_parts)
+        logger.debug(f"Source data: {source_parts}")
         source_emb = self.compute_embedding(source_text)
         
         if source_emb is None:
@@ -283,6 +289,7 @@ class EmbeddingDetector:
                 if has_keywords and keywords:
                     candidate_parts.extend(keywords)
                 
+                logger.debug(f"Candidate data: {candidate_parts}")
                 candidate_text = " ".join(candidate_parts)
                 
                 field_candidates_data[search_field].append((node_id, title, description, keywords, url, candidate_text))

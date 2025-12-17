@@ -6,14 +6,16 @@ FastAPI-basierter Dienst zur Erkennung von Dubletten (ähnlichen Inhalten) im WL
 
 - **Hash-basierte Erkennung (MinHash)**: Schnelle Ähnlichkeitsberechnung basierend auf Textshingles
 - **Embedding-basierte Erkennung**: Semantische Ähnlichkeit mit Sentence-Transformers (GPU-Unterstützung)
-- **URL-Normalisierung**: Erkennt identische URLs trotz unterschiedlicher Schreibweise
-- **Titel-Normalisierung**: Entfernt Publisher-Suffixe für bessere Kandidatensuche
+- **URL-Normalisierung**: Erkennt identische URLs trotz unterschiedlicher Schreibweise (inkl. YouTube)
+- **Titel-Varianten**: Automatische Generierung von Suchvarianten (Umlaute, Adjektiv-Endungen, ohne Sonderzeichen)
+- **Parallele Suche**: Alle Suchanfragen (inkl. Varianten) werden mit 10 Workern parallel ausgeführt
 - **URL-Exact-Match**: URLs werden immer verglichen - exakte Übereinstimmung = Dublette
-- **Embedding-API**: Separater Endpunkt für Embedding-Generierung (ohne Rate Limit)
+- **Timing-Informationen**: Detaillierte Zeitmessung pro Verarbeitungsschritt in der Response
+- **Embedding/Hash-API**: Separate Endpunkte für Embedding- und Hash-Generierung (ohne Rate Limit)
 - **Flexible Eingabe**: Per Node-ID oder direkte Metadateneingabe
-- **Erweiterte Kandidatensuche**: Original + normalisierte Suchen für mehr Treffer
+- **Erweiterte Kandidatensuche**: Original + normalisierte + Varianten-Suchen für mehr Treffer
 - **Paginierung**: Automatische Paginierung für große Kandidatenmengen (>100)
-- **Rate Limiting**: Schutz vor Überlastung (100 Requests/Minute für Detection-Endpoints)
+- **Rate Limiting**: Schutz vor Überlastung (200 Requests/Minute für Detection-Endpoints)
 - **Google Colab kompatibel**: Nutzt GPU wenn verfügbar
 
 ## Installation
@@ -156,24 +158,35 @@ curl -X POST "http://localhost:8000/embed" \
 }
 ```
 
-#### `POST /embed/batch`
-Erzeugt Embeddings für mehrere Texte gleichzeitig (effizienter als Einzelaufrufe).
+### Hash-Signatur-Generierung (ohne Rate Limit)
+
+#### `POST /hash`
+Erzeugt eine MinHash-Signatur (100 Hash-Werte) für einen Text.
 
 ```bash
-curl -X POST "http://localhost:8000/embed/batch" \
+curl -X POST "http://localhost:8000/hash" \
   -H "Content-Type: application/json" \
-  -d '{"texts": ["Text 1", "Text 2", "Text 3"]}'
+  -d '{"text": "Dies ist ein Beispieltext"}'
 ```
 
 **Response:**
 ```json
 {
   "success": true,
-  "embeddings": [[...], [...], [...]],
-  "dimensions": 384,
-  "count": 3,
-  "model": "paraphrase-multilingual-MiniLM-L12-v2"
+  "text": "Dies ist ein Beispieltext",
+  "signature": [2847291034, 183746529, 947261834, ...],
+  "num_hashes": 100
 }
+```
+
+**Vergleich von Hash-Signaturen:**
+```python
+def jaccard_similarity(sig_a, sig_b):
+    return sum(a == b for a, b in zip(sig_a, sig_b)) / len(sig_a)
+
+similarity = jaccard_similarity(hash_a, hash_b)
+if similarity >= 0.9:
+    print("Wahrscheinlich Duplikat!")
 ```
 
 ## Request-Parameter
@@ -183,7 +196,7 @@ curl -X POST "http://localhost:8000/embed/batch" \
 | Parameter | Typ | Default | Beschreibung |
 |-----------|-----|---------|--------------|
 | `environment` | string | `production` | WLO-Umgebung: `production` oder `staging` |
-| `search_fields` | array | `["title", "description", "keywords", "url"]` | Felder für Kandidatensuche |
+| `search_fields` | array | `["title", "description", "url"]` | Felder für Kandidatensuche (keywords optional) |
 | `max_candidates` | int | `100` | Max. Kandidaten pro Suchfeld (1-1000, Paginierung ab >100) |
 
 ### Hash-spezifisch
@@ -304,6 +317,14 @@ URLs werden normalisiert für besseres Matching:
 | `http://example.com/page?utm=x` | `example.com/page` |
 | `HTTPS://WWW.EXAMPLE.COM/Page` | `example.com/page` |
 
+**YouTube-URLs** werden auf kanonische Form normalisiert:
+
+| Original | Normalisiert |
+|----------|--------------|
+| `https://youtu.be/dQw4w9WgXcQ` | `youtube.com/watch?v=dQw4w9WgXcQ` |
+| `https://www.youtube.com/embed/dQw4w9WgXcQ` | `youtube.com/watch?v=dQw4w9WgXcQ` |
+| `https://www.youtube.com/shorts/dQw4w9WgXcQ` | `youtube.com/watch?v=dQw4w9WgXcQ` |
+
 ### Titel-Normalisierung
 
 Publisher-Suffixe werden für die Kandidatensuche entfernt:
@@ -315,6 +336,72 @@ Publisher-Suffixe werden für die Kandidatensuche entfernt:
 | `Geschichte (planet-schule.de)` | `Geschichte` |
 
 Unterstützte Suffixe: Wikipedia, Klexikon, Wikibooks, planet-schule, Lehrer-Online, sofatutor, serlo, u.a.
+
+**Zusätzliche Normalisierungen:**
+- `&` wird durch Leerzeichen ersetzt
+- Mehrfache Leerzeichen werden zu einem Leerzeichen zusammengefasst
+
+### Titel-Varianten-Suche (WLO-Suchprobleme)
+
+Die WLO Elastic Search hat bekannte Probleme:
+- **Keine Lemmatisierung**: "energieeffiziente" ≠ "energieeffizienter" ≠ "energieeffizient"
+- **Case-Sensitive**: "Mathematik" ≠ "mathematik"
+- **Umlaut-Handling**: "Übung" könnte als "Uebung" gespeichert sein
+
+Um diese Probleme zu umgehen, werden automatisch **Titel-Varianten** generiert:
+
+**Beispiel:** `Übungen für Grundschüler - Wikipedia`
+
+| Variante | Beschreibung |
+|----------|-------------|
+| `übungen für grundschüler` | Lowercase, ohne Suffix |
+| `uebungen fuer grundschueler` | Umlaute normalisiert (ä→ae, ö→oe, ü→ue, ß→ss) |
+| `übung für grundschüler` | Basisform (Endung entfernt) |
+| `energie effizient` | Bindestriche entfernt/ersetzt |
+
+**Varianten-Typen:**
+- **Lowercase**: Groß-/Kleinschreibung
+- **Umlaute**: ä→ae, ö→oe, ü→ue, ß→ss
+- **Bindestriche**: Entfernt oder durch Leerzeichen ersetzt
+- **Ohne Sonderzeichen**: Nur alphanumerische Zeichen behalten
+- **Adjektiv-Endungen**: `-e`, `-er`, `-es`, `-en`, `-em`
+
+**Alle Suchen (inkl. Varianten) werden mit 10 parallelen Workern ausgeführt** für optimale Performance.
+
+### Timing-Informationen
+
+Jede Response enthält detaillierte Zeitmessungen:
+
+```json
+"timing": {
+  "metadata_fetch_ms": 1702.9,
+  "candidate_search_ms": 2333.2,
+  "enrichment_ms": 0,
+  "similarity_calculation_ms": 497.8,
+  "total_ms": 4653.3
+}
+```
+
+| Feld | Beschreibung |
+|------|--------------|
+| `metadata_fetch_ms` | Zeit für WLO-Metadaten-Abruf (nur by-node) |
+| `candidate_search_ms` | Zeit für parallele Kandidatensuche |
+| `enrichment_ms` | Zeit für Metadaten-Anreicherung |
+| `similarity_calculation_ms` | Zeit für Hash/Embedding-Berechnung |
+| `total_ms` | Gesamte Verarbeitungszeit |
+
+### Keywords als Suchfeld
+
+**Keywords sind optional** und nicht im Standard-Suchfeld enthalten, da sie oft zu False Positives führen.
+
+Um Keywords explizit zu nutzen:
+```json
+{
+  "search_fields": ["title", "description", "keywords", "url"]
+}
+```
+
+**Wichtig:** Keywords beeinflussen das Similarity-Scoring nur, wenn sie explizit in `search_fields` angegeben sind.
 
 ## Match-Typen
 
@@ -392,7 +479,16 @@ Umgebungsvariablen in `docker-compose.yml` oder via `-e`:
 | Variable | Default | Beschreibung |
 |----------|---------|--------------|
 | `EMBEDDING_MODEL` | `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` | Embedding-Modell |
-| `LOG_LEVEL` | `INFO` | Log-Level |
+| `LOG_LEVEL` | `INFO` | Log-Level (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
+
+**Debug-Modus aktivieren:**
+```bash
+# Für detaillierte Logs (Source/Candidate-Daten, Titel-Normalisierung)
+LOG_LEVEL=DEBUG python run.py
+
+# Oder in docker-compose.yml:
+# LOG_LEVEL: DEBUG
+```
 
 ### Dateien
 
@@ -425,9 +521,9 @@ Die API kann in Google Colab mit GPU-Unterstützung betrieben werden:
 
 | Endpunkt | Rate Limit |
 |----------|------------|
-| `/detect/*` | 100/Minute |
+| `/detect/*` | 200/Minute |
 | `/embed` | Kein Limit |
-| `/embed/batch` | Kein Limit |
+| `/hash` | Kein Limit |
 | `/health` | Kein Limit |
 
 ## Credits

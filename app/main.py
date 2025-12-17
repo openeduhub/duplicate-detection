@@ -1,6 +1,7 @@
 """WLO Duplicate Detection API - FastAPI Application."""
 
 from contextlib import asynccontextmanager
+import os
 import time
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -22,10 +23,11 @@ from app.models import (
     SearchField,
     CandidateStats,
     EmbeddingRequest,
-    EmbeddingBatchRequest,
     EmbeddingResponse,
-    EmbeddingBatchResponse,
+    HashRequest,
+    HashResponse,
     EnrichmentInfo,
+    TimingInfo,
     resolve_url_redirect,
     normalize_url,
 )
@@ -34,14 +36,16 @@ from app.hash_detector import hash_detector
 from app.embedding_detector import embedding_detector, is_model_loaded, is_embedding_available, get_current_model_name
 from app.config import detection_config
 
-# Configure logging with JSON format for production
+# Configure logging - level configurable via LOG_LEVEL environment variable
+LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
 logger.remove()
 logger.add(
     sys.stderr, 
-    level="INFO", 
+    level=LOG_LEVEL, 
     format="{time:YYYY-MM-DD HH:mm:ss} | {level:<8} | {message}",
     colorize=True
 )
+logger.info(f"Logging initialized with level: {LOG_LEVEL}")
 
 # Rate limiter setup
 limiter = Limiter(key_func=get_remote_address)
@@ -66,24 +70,29 @@ API für die Erkennung von Dubletten (ähnlichen Inhalten) im WLO-Repository.
 
 ## Funktionen
 
-- **Hash-basierte Erkennung**: Nutzt MinHash für schnelle Ähnlichkeitsberechnung basierend auf Textshingles
-- **Embedding-basierte Erkennung**: Nutzt Sentence-Transformers für semantische Ähnlichkeit
+- **Hash-basierte Erkennung**: MinHash für schnelle Ähnlichkeitsberechnung (Textshingles)
+- **Embedding-basierte Erkennung**: Sentence-Transformers für semantische Ähnlichkeit (GPU-Unterstützung)
+- **URL-Normalisierung**: Erkennt identische URLs trotz unterschiedlicher Schreibweise (inkl. YouTube)
+- **Titel-Varianten**: Automatische Generierung von Suchvarianten (Umlaute, Adjektiv-Endungen)
+- **Parallele Suche**: Kandidatensuche über mehrere Felder gleichzeitig
 
 ## Ablauf
 
-1. **Metadaten laden**: Vollständige Metadaten des Inhalts werden von WLO heruntergeladen
-2. **Kandidatensuche**: Suche nach potenziellen Duplikaten über:
-   - Titel (ngsearchword)
-   - Beschreibung
-   - Keywords
-   - URL
-3. **Ähnlichkeitsberechnung**: Vergleich mit Hash- oder Embedding-Verfahren
-4. **Ergebnis**: Liste der potenziellen Duplikate mit Ähnlichkeitswerten
+1. **Metadaten laden**: Vollständige Metadaten werden von WLO geladen
+2. **Kandidatensuche** (parallel): Titel, Beschreibung, URL mit Varianten
+3. **Deduplizierung**: Entfernung doppelter Kandidaten
+4. **Ähnlichkeitsberechnung**: Hash- oder Embedding-Vergleich
+5. **Ergebnis**: Duplikate mit Ähnlichkeitswerten und Match-Quelle
 
 ## Eingabemöglichkeiten
 
 - **Per Node-ID**: Für bestehende WLO-Inhalte
 - **Per Metadaten**: Für neue, noch nicht publizierte Inhalte
+
+## Zusätzliche Endpunkte
+
+- **/embed**: Embedding-Vektor für einen Text generieren
+- **/hash**: MinHash-Signatur für einen Text generieren
     """,
     version="1.0.0",
     license_info={
@@ -373,16 +382,20 @@ Erkennt Dubletten für einen bestehenden WLO-Inhalt anhand seiner Node-ID.
 
 **Schwellenwert:** 0.8 bedeutet 80% Ähnlichkeit der Shingles.
 
-**Rate Limit:** 100 Requests pro Minute
+**Rate Limit:** 200 Requests pro Minute
     """
 )
-@limiter.limit("100/minute")
+@limiter.limit("200/minute")
 async def detect_hash_by_node(request: Request, body: HashDetectionRequest):
     """Hash-based duplicate detection by node ID."""
     logger.info(f"Hash detection for node {body.node_id} in {body.environment.value}")
+    total_start = time.time()
     
     # Fetch metadata
+    t0 = time.time()
     metadata, error = get_metadata_from_node(body.node_id, body.environment)
+    metadata_fetch_ms = (time.time() - t0) * 1000
+    
     if error:
         return DetectionResponse(
             success=False,
@@ -393,6 +406,7 @@ async def detect_hash_by_node(request: Request, body: HashDetectionRequest):
         )
     
     # Search for candidates
+    t0 = time.time()
     client = WLOClient(environment=body.environment)
     candidates, search_info = client.search_candidates(
         metadata=metadata,
@@ -400,8 +414,10 @@ async def detect_hash_by_node(request: Request, body: HashDetectionRequest):
         max_candidates=body.max_candidates,
         exclude_node_id=body.node_id
     )
+    candidate_search_ms = (time.time() - t0) * 1000
     
     # Enrich metadata from candidates if enabled (usually no-op for node lookups)
+    t0 = time.time()
     enrichment_info = None
     if body.enrich_from_candidates:
         metadata, enrichment_info = enrich_metadata_from_candidates(metadata, candidates, client)
@@ -427,14 +443,26 @@ async def detect_hash_by_node(request: Request, body: HashDetectionRequest):
             for field, info in enriched_search_info.items():
                 if field not in search_info:
                     search_info[field] = info
+    enrichment_ms = (time.time() - t0) * 1000
     
     total_candidates = count_candidates(candidates)
     
     # Find duplicates
+    t0 = time.time()
     duplicates, field_similarities = hash_detector.find_duplicates(
         source_metadata=metadata,
         candidates=candidates,
         threshold=body.similarity_threshold
+    )
+    similarity_ms = (time.time() - t0) * 1000
+    
+    total_ms = (time.time() - total_start) * 1000
+    timing = TimingInfo(
+        metadata_fetch_ms=round(metadata_fetch_ms, 1),
+        candidate_search_ms=round(candidate_search_ms, 1),
+        enrichment_ms=round(enrichment_ms, 1),
+        similarity_calculation_ms=round(similarity_ms, 1),
+        total_ms=round(total_ms, 1)
     )
     
     candidate_stats = build_candidate_stats(search_info, field_similarities)
@@ -446,6 +474,7 @@ async def detect_hash_by_node(request: Request, body: HashDetectionRequest):
         method="hash",
         threshold=body.similarity_threshold,
         enrichment=enrichment_info,
+        timing=timing,
         candidate_search_results=candidate_stats,
         total_candidates_checked=total_candidates,
         duplicates=duplicates
@@ -466,13 +495,14 @@ Erkennt Dubletten für einen neuen Inhalt anhand direkt eingegebener Metadaten.
 
 **Schwellenwert:** 0.8 bedeutet 80% Ähnlichkeit der Shingles.
 
-**Rate Limit:** 100 Requests pro Minute
+**Rate Limit:** 200 Requests pro Minute
     """
 )
-@limiter.limit("100/minute")
+@limiter.limit("200/minute")
 async def detect_hash_by_metadata(request: Request, body: HashMetadataRequest):
     """Hash-based duplicate detection by metadata."""
     logger.info(f"Hash detection by metadata in {body.environment.value}")
+    total_start = time.time()
     
     if not body.metadata.has_content():
         return DetectionResponse(
@@ -498,14 +528,17 @@ async def detect_hash_by_metadata(request: Request, body: HashMetadataRequest):
             logger.info(f"Resolved redirect for input URL: {metadata.url[:50]}... -> {final_url[:50]}...")
     
     # Search for candidates
+    t0 = time.time()
     client = WLOClient(environment=body.environment)
     candidates, search_info = client.search_candidates(
         metadata=metadata,
         search_fields=body.search_fields,
         max_candidates=body.max_candidates
     )
+    candidate_search_ms = (time.time() - t0) * 1000
     
     # Enrich metadata from candidates if enabled
+    t0 = time.time()
     enrichment_info = None
     if body.enrich_from_candidates:
         metadata, enrichment_info = enrich_metadata_from_candidates(metadata, candidates, client)
@@ -532,14 +565,26 @@ async def detect_hash_by_metadata(request: Request, body: HashMetadataRequest):
             for field, info in enriched_search_info.items():
                 if field not in search_info:
                     search_info[field] = info
+    enrichment_ms = (time.time() - t0) * 1000
     
     total_candidates = count_candidates(candidates)
     
     # Find duplicates
+    t0 = time.time()
     duplicates, field_similarities = hash_detector.find_duplicates(
         source_metadata=metadata,
         candidates=candidates,
         threshold=body.similarity_threshold
+    )
+    similarity_ms = (time.time() - t0) * 1000
+    
+    total_ms = (time.time() - total_start) * 1000
+    timing = TimingInfo(
+        metadata_fetch_ms=None,
+        candidate_search_ms=round(candidate_search_ms, 1),
+        enrichment_ms=round(enrichment_ms, 1),
+        similarity_calculation_ms=round(similarity_ms, 1),
+        total_ms=round(total_ms, 1)
     )
     
     candidate_stats = build_candidate_stats(search_info, field_similarities)
@@ -550,6 +595,7 @@ async def detect_hash_by_metadata(request: Request, body: HashMetadataRequest):
         method="hash",
         threshold=body.similarity_threshold,
         enrichment=enrichment_info,
+        timing=timing,
         candidate_search_results=candidate_stats,
         total_candidates_checked=total_candidates,
         duplicates=duplicates
@@ -578,16 +624,20 @@ Erkennt semantisch ähnliche Inhalte für einen bestehenden WLO-Inhalt.
 
 **Schwellenwert:** 0.95 (Standard) bedeutet 95% semantische Ähnlichkeit.
 
-**Rate Limit:** 100 Requests pro Minute
+**Rate Limit:** 200 Requests pro Minute
     """
 )
-@limiter.limit("100/minute")
+@limiter.limit("200/minute")
 async def detect_embedding_by_node(request: Request, body: EmbeddingDetectionRequest):
     """Embedding-based duplicate detection by node ID."""
     logger.info(f"Embedding detection for node {body.node_id} in {body.environment.value}")
+    total_start = time.time()
     
     # Fetch metadata
+    t0 = time.time()
     metadata, error = get_metadata_from_node(body.node_id, body.environment)
+    metadata_fetch_ms = (time.time() - t0) * 1000
+    
     if error:
         return DetectionResponse(
             success=False,
@@ -598,6 +648,7 @@ async def detect_embedding_by_node(request: Request, body: EmbeddingDetectionReq
         )
     
     # Search for candidates
+    t0 = time.time()
     client = WLOClient(environment=body.environment)
     candidates, search_info = client.search_candidates(
         metadata=metadata,
@@ -605,8 +656,10 @@ async def detect_embedding_by_node(request: Request, body: EmbeddingDetectionReq
         max_candidates=body.max_candidates,
         exclude_node_id=body.node_id
     )
+    candidate_search_ms = (time.time() - t0) * 1000
     
     # Enrich metadata from candidates if enabled (usually no-op for node lookups)
+    t0 = time.time()
     enrichment_info = None
     if body.enrich_from_candidates:
         metadata, enrichment_info = enrich_metadata_from_candidates(metadata, candidates, client)
@@ -631,10 +684,12 @@ async def detect_embedding_by_node(request: Request, body: EmbeddingDetectionReq
             for field, info in enriched_search_info.items():
                 if field not in search_info:
                     search_info[field] = info
+    enrichment_ms = (time.time() - t0) * 1000
     
     total_candidates = count_candidates(candidates)
     
     # Find duplicates
+    t0 = time.time()
     try:
         duplicates, field_similarities = embedding_detector.find_duplicates(
             source_metadata=metadata,
@@ -650,6 +705,16 @@ async def detect_embedding_by_node(request: Request, body: EmbeddingDetectionReq
             threshold=body.similarity_threshold,
             error=str(e)
         )
+    similarity_ms = (time.time() - t0) * 1000
+    
+    total_ms = (time.time() - total_start) * 1000
+    timing = TimingInfo(
+        metadata_fetch_ms=round(metadata_fetch_ms, 1),
+        candidate_search_ms=round(candidate_search_ms, 1),
+        enrichment_ms=round(enrichment_ms, 1),
+        similarity_calculation_ms=round(similarity_ms, 1),
+        total_ms=round(total_ms, 1)
+    )
     
     candidate_stats = build_candidate_stats(search_info, field_similarities)
     
@@ -660,6 +725,7 @@ async def detect_embedding_by_node(request: Request, body: EmbeddingDetectionReq
         method="embedding",
         threshold=body.similarity_threshold,
         enrichment=enrichment_info,
+        timing=timing,
         candidate_search_results=candidate_stats,
         total_candidates_checked=total_candidates,
         duplicates=duplicates
@@ -683,13 +749,14 @@ Erkennt semantisch ähnliche Inhalte für einen neuen Inhalt anhand direkt einge
 
 **Schwellenwert:** 0.95 (Standard) bedeutet 95% semantische Ähnlichkeit.
 
-**Rate Limit:** 100 Requests pro Minute
+**Rate Limit:** 200 Requests pro Minute
     """
 )
-@limiter.limit("100/minute")
+@limiter.limit("200/minute")
 async def detect_embedding_by_metadata(request: Request, body: EmbeddingMetadataRequest):
     """Embedding-based duplicate detection by metadata."""
     logger.info(f"Embedding detection by metadata in {body.environment.value}")
+    total_start = time.time()
     
     if not body.metadata.has_content():
         return DetectionResponse(
@@ -715,14 +782,17 @@ async def detect_embedding_by_metadata(request: Request, body: EmbeddingMetadata
             logger.info(f"Resolved redirect for input URL: {metadata.url[:50]}... -> {final_url[:50]}...")
     
     # Search for candidates
+    t0 = time.time()
     client = WLOClient(environment=body.environment)
     candidates, search_info = client.search_candidates(
         metadata=metadata,
         search_fields=body.search_fields,
         max_candidates=body.max_candidates
     )
+    candidate_search_ms = (time.time() - t0) * 1000
     
     # Enrich metadata from candidates if enabled
+    t0 = time.time()
     enrichment_info = None
     if body.enrich_from_candidates:
         metadata, enrichment_info = enrich_metadata_from_candidates(metadata, candidates, client)
@@ -746,10 +816,12 @@ async def detect_embedding_by_metadata(request: Request, body: EmbeddingMetadata
             for field, info in enriched_search_info.items():
                 if field not in search_info:
                     search_info[field] = info
+    enrichment_ms = (time.time() - t0) * 1000
     
     total_candidates = count_candidates(candidates)
     
     # Find duplicates
+    t0 = time.time()
     try:
         duplicates, field_similarities = embedding_detector.find_duplicates(
             source_metadata=metadata,
@@ -764,6 +836,16 @@ async def detect_embedding_by_metadata(request: Request, body: EmbeddingMetadata
             threshold=body.similarity_threshold,
             error=str(e)
         )
+    similarity_ms = (time.time() - t0) * 1000
+    
+    total_ms = (time.time() - total_start) * 1000
+    timing = TimingInfo(
+        metadata_fetch_ms=None,
+        candidate_search_ms=round(candidate_search_ms, 1),
+        enrichment_ms=round(enrichment_ms, 1),
+        similarity_calculation_ms=round(similarity_ms, 1),
+        total_ms=round(total_ms, 1)
+    )
     
     candidate_stats = build_candidate_stats(search_info, field_similarities)
     
@@ -773,6 +855,7 @@ async def detect_embedding_by_metadata(request: Request, body: EmbeddingMetadata
         method="embedding",
         threshold=body.similarity_threshold,
         enrichment=enrichment_info,
+        timing=timing,
         candidate_search_results=candidate_stats,
         total_candidates_checked=total_candidates,
         duplicates=duplicates
@@ -844,65 +927,57 @@ async def create_embedding(body: EmbeddingRequest):
         )
 
 
+# ============================================================================
+# Hash Signature Endpoints (no rate limit)
+# ============================================================================
+
 @app.post(
-    "/embed/batch",
-    response_model=EmbeddingBatchResponse,
-    tags=["Embeddings"],
-    summary="Batch Text zu Embeddings",
+    "/hash",
+    response_model=HashResponse,
+    tags=["Hash Signatures"],
+    summary="Text zu MinHash-Signatur",
     description="""
-Erzeugt Embedding-Vektoren für mehrere Texte gleichzeitig.
+Erzeugt eine MinHash-Signatur für einen Text.
 
-**Modell:** Konfigurierbar (siehe /health für aktuelles Modell)
+**Ausgabe:** Array von 100 Hash-Werten (32-bit Integer)
 
-**Ausgabe:** Liste von 384-dimensionalen Vektoren
+**Vergleich:** Zwei Signaturen können mit Jaccard-Ähnlichkeit verglichen werden:
+```python
+similarity = sum(a == b for a, b in zip(sig_a, sig_b)) / len(sig_a)
+```
 
 **Kein Rate Limit** - für intensive Nutzung geeignet.
-
-**Effizienter** als einzelne Aufrufe bei vielen Texten.
     """
 )
-async def create_embeddings_batch(body: EmbeddingBatchRequest):
-    """Create embeddings for multiple texts."""
-    logger.info(f"Batch embedding request for {len(body.texts)} texts")
-    
-    if not is_embedding_available():
-        return EmbeddingBatchResponse(
-            success=False,
-            embeddings=[],
-            dimensions=0,
-            count=0,
-            model="",
-            error="Embedding model not available"
-        )
+async def create_hash(body: HashRequest):
+    """Create MinHash signature for a single text."""
+    logger.info(f"Hash request for text ({len(body.text)} chars)")
     
     try:
-        embeddings = embedding_detector.batch_compute_embeddings(body.texts)
+        signature = hash_detector.compute_text_signature(body.text)
         
-        # Convert to lists and filter None values
-        result_embeddings = []
-        for emb in embeddings:
-            if emb is not None:
-                result_embeddings.append(emb.tolist())
-            else:
-                result_embeddings.append([])
+        if signature is None:
+            return HashResponse(
+                success=False,
+                text=body.text,
+                signature=[],
+                num_hashes=hash_detector.num_hashes,
+                error="Could not compute hash signature (text too short?)"
+            )
         
-        dimensions = len(result_embeddings[0]) if result_embeddings and result_embeddings[0] else 0
-        
-        return EmbeddingBatchResponse(
+        return HashResponse(
             success=True,
-            embeddings=result_embeddings,
-            dimensions=dimensions,
-            count=len(result_embeddings),
-            model=get_current_model_name()
+            text=body.text,
+            signature=signature.tolist(),
+            num_hashes=hash_detector.num_hashes
         )
     except Exception as e:
-        logger.error(f"Batch embedding failed: {e}")
-        return EmbeddingBatchResponse(
+        logger.error(f"Hash computation failed: {e}")
+        return HashResponse(
             success=False,
-            embeddings=[],
-            dimensions=0,
-            count=0,
-            model=get_current_model_name(),
+            text=body.text,
+            signature=[],
+            num_hashes=hash_detector.num_hashes,
             error=str(e)
         )
 
@@ -930,7 +1005,7 @@ async def root():
             "embedding_by_node": "/detect/embedding/by-node",
             "embedding_by_metadata": "/detect/embedding/by-metadata",
             "embed": "/embed",
-            "embed_batch": "/embed/batch",
+            "hash": "/hash",
             "health": "/health"
         }
     }
