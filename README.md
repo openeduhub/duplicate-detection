@@ -28,15 +28,6 @@ docker build -t wlo-duplicate-detection .
 docker run -d -p 8000:8000 --name wlo-duplicate-detection wlo-duplicate-detection
 ```
 
-**Mit GPU-Unterstützung:**
-```bash
-# GPU-Image bauen
-docker build -f Dockerfile.gpu -t wlo-duplicate-detection:gpu .
-
-# Mit NVIDIA Runtime starten
-docker run -d --gpus all -p 8000:8000 --name wlo-duplicate-detection wlo-duplicate-detection:gpu
-```
-
 ### Option 2: Lokale Installation
 
 ```bash
@@ -279,13 +270,8 @@ docker-compose down
 ### Manuell bauen
 
 ```bash
-# CPU-Version
 docker build -t wlo-duplicate-detection .
 docker run -d -p 8000:8000 --name wlo-duplicate-detection wlo-duplicate-detection
-
-# GPU-Version (NVIDIA)
-docker build -f Dockerfile.gpu -t wlo-duplicate-detection:gpu .
-docker run -d --gpus all -p 8000:8000 --name wlo-duplicate-detection wlo-duplicate-detection:gpu
 ```
 
 ### Konfiguration
@@ -301,14 +287,12 @@ Umgebungsvariablen in `docker-compose.yml` oder via `-e`:
 | Datei | Beschreibung |
 |-------|--------------|
 | `Dockerfile` | CPU-Image (python:3.11-slim, ~1.5GB) |
-| `Dockerfile.gpu` | GPU-Image (pytorch/cuda12.1, ~8GB) |
-| `docker-compose.yml` | Orchestrierung mit Volume für Model-Cache |
+| `docker-compose.yml` | Orchestrierung |
 | `.dockerignore` | Optimiert Build-Größe |
 
 ### Features
 
 - **Health Check**: Automatische Überwachung (`/health` Endpoint)
-- **Model Cache Volume**: Embedding-Modell wird persistent gespeichert
 - **Non-root User**: Sicherheit durch unprivilegierten Benutzer
 - **Restart Policy**: Automatischer Neustart bei Fehler
 
@@ -329,7 +313,6 @@ Die Hash-basierte Dublettenerkennung (MinHash) basiert auf dem Code von:
 ## Technologien
 
 - **FastAPI**: Web-Framework
-- **Sentence-Transformers**: Embedding-Modell (GPU-Unterstützung)
 - **NumPy**: Ähnlichkeitsberechnung
 - **Pydantic**: Datenvalidierung
 - **Loguru**: Logging

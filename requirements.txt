@@ -7,9 +7,6 @@ pydantic>=2.5.0
 requests>=2.31.0
 tenacity>=8.2.0
 
-# Embedding model
-sentence-transformers>=2.2.0
-
 # Numpy for similarity computation
 numpy>=1.24.0
 

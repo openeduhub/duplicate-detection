@@ -7,9 +7,6 @@ services:
     ports:
       - "8000:8000"
     environment:
-      # Optional: Override embedding model
-      # EMBEDDING_MODEL: sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
-      
       # Optional: Log level
       LOG_LEVEL: DEBUG
     volumes:
