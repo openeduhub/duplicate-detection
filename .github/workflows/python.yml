@@ -1,0 +1,48 @@
+name: continuous integration pipeline (build project with uv)
+on:
+  push:
+    branches: [ $default-branch, develop ]
+  pull_request:
+    branches: [ $default-branch, develop ]
+
+jobs:
+  uv-build:
+    # see: https://docs.astral.sh/uv/guides/integration/github/
+    name: python
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version:
+          - 3.13
+#          - 3.14  # ToDo: enable this when Python 3.14 (stable) has been released
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
+
+      - name: Install the project
+        run: uv sync --locked --all-extras --dev
+
+      - name: show ruff version
+        uses: astral-sh/ruff-action@v3
+        # see: https://docs.astral.sh/ruff/integrations/#github-actions
+        # and https://github.com/marketplace/actions/ruff-action
+        with:
+          args: "--version"
+
+      - name: Run Ruff
+        run: ruff check --output-format=github .
+
+      - name: Ruff Format
+        run: ruff format --diff
+
+      - name: build package with uv
+        run: uv build
+
+      - name: run tests
+        run: echo "This is a friendly reminder that tests are not implemented yet."

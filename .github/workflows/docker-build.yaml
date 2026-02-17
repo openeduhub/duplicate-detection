@@ -1,0 +1,31 @@
+name: Docker Build & Publish
+
+on:
+  push:
+    branches: [ main, develop ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - uses: azure/docker-login@v1
+        with:
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.DOCKERHUB_PASSWORD }}
+      - name: Inject slug/short variables
+        uses: rlespinasse/github-slug-action@v4
+      - name: Build Docker image
+        run: docker build --tag ${{ github.repository }}:${{ env.GITHUB_REF_SLUG }} .
+      - name: Publish to DockerHub
+        run: docker push ${{ github.repository }}:${{ env.GITHUB_REF_SLUG }}
