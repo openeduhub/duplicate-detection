@@ -1,64 +1,99 @@
 # WLO Duplicate Detection API
 
-FastAPI-basierter Dienst zur Erkennung von Dubletten (ähnlichen Inhalten) im WLO-Repository.
+A FastAPI-based microservice for detecting duplicate (similar) content in the WLO repository using hash-based similarity matching (MinHash).
 
 ## Features
 
-- **Hash-basierte Erkennung (MinHash)**: Schnelle Ähnlichkeitsberechnung basierend auf Textshingles
-- **URL-Normalisierung**: Erkennt identische URLs trotz unterschiedlicher Schreibweise
-- **Titel-Normalisierung**: Entfernt Publisher-Suffixe für bessere Kandidatensuche
-- **URL-Exact-Match**: URLs werden immer verglichen - exakte Übereinstimmung = Dublette
-- **Flexible Eingabe**: Per Node-ID oder direkte Metadateneingabe
-- **Erweiterte Kandidatensuche**: Original + normalisierte Suchen für mehr Treffer
-- **Paginierung**: Automatische Paginierung für große Kandidatenmengen (>100)
-- **Rate Limiting**: Schutz vor Überlastung (100 Requests/Minute für Detection-Endpoints)
+- **Hash-based Detection (MinHash)**: Fast similarity calculation based on text shingles
+- **URL Normalization**: Detects identical URLs despite different formatting
+- **Title Normalization**: Removes publisher suffixes for better candidate search
+- **URL Exact Match**: URLs are always compared - exact match = duplicate
+- **Flexible Input**: Per Node-ID or direct metadata input
+- **Advanced Candidate Search**: Original + normalized searches for more hits
+- **Pagination**: Automatic pagination for large candidate sets (>100)
+- **Rate Limiting**: Protection against overload (100 requests/minute for detection endpoints)
+- **Metadata Enrichment**: Automatically enriches sparse metadata from matching candidates
 
-## Installation
+## Quick Start
 
-### Option 1: Docker (empfohlen)
+### Prerequisites
 
-```bash
-cd duplicate-detection
+- Python 3.11+
+- pip or uv package manager
+- Docker (optional, for containerized deployment)
 
-# Mit Docker Compose (einfachste Variante)
-docker-compose up -d
-
-# Oder manuell bauen und starten
-docker build -t wlo-duplicate-detection .
-docker run -d -p 8000:8000 --name wlo-duplicate-detection wlo-duplicate-detection
-```
-
-### Option 2: Lokale Installation
+### Local Development
 
 ```bash
+# Clone the repository
+git clone https://github.com/openeduhub/duplicate-detection.git
 cd duplicate-detection
+
+# Install dependencies
 pip install -r requirements.txt
-```
 
-## Starten
-
-```bash
-# Docker
-docker-compose up -d
-
-# Direkt mit Python
+# Run the service
 python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
-
-# Oder mit dem Run-Script
-python run.py
 ```
 
-Die API ist dann unter `http://localhost:8000` erreichbar.
+The API will be available at `http://localhost:8000`
 
 - **Swagger UI**: http://localhost:8000/docs
 - **ReDoc**: http://localhost:8000/redoc
 
-## Endpunkte
+### Docker Deployment
 
-### Hash-basierte Erkennung
+```bash
+# Build the Docker image
+docker build -t wlo-duplicate-detection:latest .
 
-#### `POST /detect/hash/by-node`
-Dublettenerkennung für einen bestehenden WLO-Inhalt per Node-ID.
+# Run the container
+docker run -d \
+  -p 8000:8000 \
+  -e WLO_BASE_URL="https://repository.staging.openeduhub.net/edu-sharing/rest" \
+  --name wlo-duplicate-detection \
+  wlo-duplicate-detection:latest
+```
+
+### Docker Compose
+
+```bash
+# Start the service with docker-compose
+docker-compose up -d
+
+# View logs
+docker-compose logs -f
+
+# Stop the service
+docker-compose down
+```
+
+## Configuration
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `WLO_BASE_URL` | `https://repository.staging.openeduhub.net/edu-sharing/rest` | Base URL of the WLO REST API |
+| `LOG_LEVEL` | `INFO` | Logging level (DEBUG, INFO, WARNING, ERROR) |
+
+### Example Configuration
+
+```bash
+# Production setup with custom WLO instance
+export WLO_BASE_URL="https://redaktion.openeduhub.net/edu-sharing/rest"
+export LOG_LEVEL="INFO"
+
+python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
+```
+
+## API Documentation
+
+For detailed API documentation, see [API.md](API.md).
+
+### Quick API Examples
+
+#### Detect duplicates by Node ID
 
 ```bash
 curl -X POST "http://localhost:8000/detect/hash/by-node" \
@@ -71,8 +106,7 @@ curl -X POST "http://localhost:8000/detect/hash/by-node" \
   }'
 ```
 
-#### `POST /detect/hash/by-metadata`
-Dublettenerkennung für neue Inhalte per direkter Metadateneingabe.
+#### Detect duplicates by metadata
 
 ```bash
 curl -X POST "http://localhost:8000/detect/hash/by-metadata" \
@@ -81,239 +115,122 @@ curl -X POST "http://localhost:8000/detect/hash/by-metadata" \
     "metadata": {
       "title": "Mathematik für Grundschüler",
       "description": "Lernen Sie die Grundlagen der Mathematik",
-      "keywords": ["Mathematik", "Grundschule", "Rechnen"]
+      "keywords": ["Mathematik", "Grundschule", "Rechnen"],
+      "url": "https://example.com/math"
     },
     "similarity_threshold": 0.9
   }'
 ```
 
-
-## Request-Parameter
-
-### Gemeinsame Parameter
-
-| Parameter | Typ | Default | Beschreibung |
-|-----------|-----|---------|--------------|
-| `search_fields` | array | `["title", "description", "keywords", "url"]` | Felder für Kandidatensuche |
-| `max_candidates` | int | `100` | Max. Kandidaten pro Suchfeld (1-1000, Paginierung ab >100) |
-
-### Hash-spezifisch
-
-| Parameter | Typ | Default | Beschreibung |
-|-----------|-----|---------|--------------|
-| `similarity_threshold` | float | `0.9` | Mindestähnlichkeit (0-1) |
-
-### Konfiguration
-
-Die WLO REST API Base-URL wird über die Umgebungsvariable `WLO_BASE_URL` konfiguriert:
-
-| Variable | Default | Beschreibung |
-|----------|---------|--------------|
-| `WLO_BASE_URL` | `https://repository.staging.openeduhub.net/edu-sharing/rest` | Base-URL der WLO REST API |
-
-
-### Metadata-Objekt
-
-| Feld | Typ | Beschreibung |
-|------|-----|--------------|
-| `title` | string | Titel des Inhalts |
-| `description` | string | Beschreibungstext |
-| `keywords` | array[string] | Liste von Schlagwörtern |
-| `url` | string | URL des Inhalts |
-
-## Response-Format
-
-```json
-{
-  "source_metadata": {
-    "title": "Islam - Wikipedia",
-    "description": "...",
-    "keywords": ["..."],
-    "url": "https://de.wikipedia.org/wiki/Islam",
-    "redirect_url": null
-  },
-  "threshold": 0.9,
-  "enrichment": {
-    "enrichment_source_node_id": null,
-    "enrichment_source_field": null,
-    "fields_added": []
-  },
-  "candidate_search_results": [
-    {
-      "field": "title",
-      "search_value": "Islam - Wikipedia → Islam",
-      "candidates_found": 45,
-      "original_count": 15,
-      "normalized_search": "Islam",
-      "normalized_count": 30,
-      "highest_similarity": 0.95
-    },
-    {
-      "field": "url",
-      "search_value": "https://de.wikipedia.org/wiki/Islam → de.wikipedia.org/wiki/islam",
-      "candidates_found": 12,
-      "original_count": 2,
-      "normalized_search": "de.wikipedia.org/wiki/islam",
-      "normalized_count": 10,
-      "highest_similarity": 1.0
-    }
-  ],
-  "total_candidates_checked": 57,
-  "duplicates": [
-    {
-      "node_id": "abc123-...",
-      "title": "Islam",
-      "description": null,
-      "keywords": null,
-      "url": "https://de.wikipedia.org/wiki/Islam",
-      "similarity_score": 1.0,
-      "match_source": "url_exact"
-    },
-    {
-      "node_id": "def456-...",
-      "title": "Ähnlicher Inhalt",
-      "description": null,
-      "keywords": null,
-      "url": "https://...",
-      "similarity_score": 0.92,
-      "match_source": "title"
-    }
-  ]
-}
-```
-
-**Hinweis:** Bei Fehlern wird eine HTTP-Exception mit entsprechendem Status-Code zurückgegeben (z.B. 400 Bad Request).
-
-## Ablauf der Erkennung
-
-1. **Metadaten laden**: Bei Node-ID-Anfragen werden die vollständigen Metadaten von WLO geladen
-
-2. **Metadaten-Anreicherung** (automatisch):
-   - Falls Metadaten unvollständig sind, wird versucht, fehlende Felder aus gefundenen Kandidaten zu ergänzen
-   - Bevorzugt URL-Exact-Matches, fallback auf Titel-Matches
-   - Nach Anreicherung wird eine neue Suche mit allen verfügbaren Feldern durchgeführt
-
-3. **Kandidatensuche** (erweitert mit Normalisierung):
-   - `title`: Original + normalisiert (ohne Publisher-Suffix wie "- Wikipedia")
-   - `description`: Suche in den ersten 100 Zeichen
-   - `keywords`: Suche mit kombinierten Keywords
-   - `url`: Original + normalisiert (ohne Protokoll, www, Query-Parameter)
-
-4. **URL-Prüfung** (hat Priorität!):
-   - Alle Kandidaten werden auf URL-Übereinstimmung geprüft
-   - Normalisierte URLs werden verglichen (http://www.example.com/ = example.com)
-   - **Exakte URL-Übereinstimmung = Dublette** (unabhängig vom Schwellenwert!)
-
-5. **Ähnlichkeitsberechnung** (für nicht-URL-Treffer):
-   - **Hash**: MinHash-Signaturen + Kosinus-Ähnlichkeit
-
-6. **Ergebnis**: URL-Matches + Treffer über Schwellenwert
-
-
-## Normalisierung
-
-### URL-Normalisierung
-
-URLs werden normalisiert für besseres Matching:
-
-| Original | Normalisiert |
-|----------|--------------|
-| `https://www.example.com/page/` | `example.com/page` |
-| `http://example.com/page?utm=x` | `example.com/page` |
-| `HTTPS://WWW.EXAMPLE.COM/Page` | `example.com/page` |
-
-### Titel-Normalisierung
-
-Publisher-Suffixe werden für die Kandidatensuche entfernt:
-
-| Original | Normalisiert |
-|----------|--------------|
-| `Islam - Wikipedia` | `Islam` |
-| `Mathematik \| Klexikon` | `Mathematik` |
-| `Geschichte (planet-schule.de)` | `Geschichte` |
-
-Unterstützte Suffixe: Wikipedia, Klexikon, Wikibooks, planet-schule, Lehrer-Online, sofatutor, serlo, u.a.
-
-## Match-Typen
-
-| `match_source` | Bedeutung | Schwellenwert |
-|----------------|-----------|---------------|
-| `url_exact` | Normalisierte URLs identisch | **Immer Dublette** |
-| `title` | Titel-basierter Treffer | Muss ≥ threshold sein |
-| `description` | Beschreibungs-Treffer | Muss ≥ threshold sein |
-| `keywords` | Keyword-Treffer | Muss ≥ threshold sein |
-| `url` | URL-Suche (nicht exakt) | Muss ≥ threshold sein |
-
-
-## Entwicklung
+#### Health check
 
 ```bash
-# Mit Auto-Reload
-uvicorn app.main:app --reload --port 8000
+curl http://localhost:8000/health
 ```
 
-## Docker
+## Project Structure
 
-### Container starten
+```
+duplicate-detection/
+├── app/
+│   ├── __init__.py
+│   ├── main.py              # FastAPI application and endpoints
+│   ├── models.py            # Pydantic models for requests/responses
+│   ├── config.py            # Configuration management
+│   ├── wlo_client.py        # WLO API client
+│   └── hash_detector.py     # Hash-based duplicate detection logic
+├── Dockerfile               # Docker image definition
+├── docker-compose.yml       # Docker Compose configuration
+├── requirements.txt         # Python dependencies
+├── README.md               # This file
+├── API.md                  # Detailed API documentation
+└── DEPLOYMENT.md           # Deployment and operations guide
+```
+
+## Development
+
+### Running Tests
 
 ```bash
-# Mit Docker Compose (empfohlen)
-docker-compose up -d
+# Install test dependencies
+pip install pytest pytest-asyncio
 
-# Logs anzeigen
-docker-compose logs -f
-
-# Stoppen
-docker-compose down
+# Run tests
+pytest
 ```
 
-### Manuell bauen
+### Code Style
+
+The project follows PEP 8 style guidelines. Use a linter to check code quality:
 
 ```bash
-docker build -t wlo-duplicate-detection .
-docker run -d -p 8000:8000 --name wlo-duplicate-detection wlo-duplicate-detection
+# Install linting tools
+pip install flake8 black
+
+# Check code style
+flake8 app/
+
+# Format code
+black app/
 ```
 
-### Konfiguration
+## Performance Characteristics
 
-Umgebungsvariablen in `docker-compose.yml` oder via `-e`:
+| Scenario | Response Time | Throughput |
+|----------|---------------|-----------|
+| Health check | <10ms | >100 req/s |
+| Duplicate detection (small metadata) | 500ms - 2s | ~0.5-2 req/s |
+| Duplicate detection (large metadata) | 2s - 10s | ~0.1-0.5 req/s |
 
-| Variable | Default | Beschreibung |
-|----------|---------|--------------|
-| `LOG_LEVEL` | `INFO` | Log-Level |
+*Note: Performance depends on WLO repository size and network latency.*
 
-### Dateien
+## Rate Limiting
 
-| Datei | Beschreibung |
-|-------|--------------|
-| `Dockerfile` | CPU-Image (python:3.11-slim, ~1.5GB) |
-| `docker-compose.yml` | Orchestrierung |
-| `.dockerignore` | Optimiert Build-Größe |
+- **Detection endpoints** (`/detect/*`): 100 requests per minute per IP
+- **Health endpoint** (`/health`): No limit
 
-### Features
+## Troubleshooting
 
-- **Health Check**: Automatische Überwachung (`/health` Endpoint)
-- **Non-root User**: Sicherheit durch unprivilegierten Benutzer
-- **Restart Policy**: Automatischer Neustart bei Fehler
+### Service won't start
 
+**Symptom:** Connection refused or port already in use
 
-## Rate Limits
+**Solution:**
+```bash
+# Check if port 8000 is in use
+lsof -i :8000
 
-| Endpunkt | Rate Limit |
-|----------|------------|
-| `/detect/*` | 100/Minute |
-| `/health` | Kein Limit |
+# Use a different port
+python -m uvicorn app.main:app --port 8001
+```
 
-## Credits
+### WLO connection errors
 
-Die Hash-basierte Dublettenerkennung (MinHash) basiert auf dem Code von:
-- **Original-Projekt:** https://github.com/yovisto/wlo-duplicate-detection
-- **Autor:** Yovisto GmbH
+**Symptom:** "Node not found" or connection timeouts
 
-## Technologien
+**Solution:**
+1. Verify `WLO_BASE_URL` is correct
+2. Check network connectivity to WLO instance
+3. Verify WLO instance is running and accessible
 
-- **FastAPI**: Web-Framework
-- **NumPy**: Ähnlichkeitsberechnung
-- **Pydantic**: Datenvalidierung
-- **Loguru**: Logging
-- **SlowAPI**: Rate Limiting
+### High memory usage
+
+**Symptom:** Process uses excessive memory
+
+**Solution:**
+- Reduce `max_candidates` parameter in requests
+- Increase available system memory
+- Check for memory leaks in logs
+
+## License
+
+MIT License - See LICENSE file for details
+
+## Contributing
+
+Contributions are welcome! Please follow the development guidelines and submit pull requests to the main repository.
+
+## Support
+
+For issues, questions, or suggestions, please open an issue on the GitHub repository:
+https://github.com/openeduhub/duplicate-detection/issues
