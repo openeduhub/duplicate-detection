@@ -74,7 +74,6 @@ curl -X POST "http://localhost:8000/detect/hash/by-node" \
   -H "Content-Type: application/json" \
   -d '{
     "node_id": "12345678-1234-1234-1234-123456789abc",
-    "environment": "production",
     "similarity_threshold": 0.9,
     "search_fields": ["title", "description", "keywords", "url"],
     "max_candidates": 100
@@ -93,7 +92,6 @@ curl -X POST "http://localhost:8000/detect/hash/by-metadata" \
       "description": "Lernen Sie die Grundlagen der Mathematik",
       "keywords": ["Mathematik", "Grundschule", "Rechnen"]
     },
-    "environment": "production",
     "similarity_threshold": 0.9
   }'
 ```
@@ -105,7 +103,6 @@ curl -X POST "http://localhost:8000/detect/hash/by-metadata" \
 
 | Parameter | Typ | Default | Beschreibung |
 |-----------|-----|---------|--------------|
-| `environment` | string | `production` | WLO-Umgebung: `production` oder `staging` |
 | `search_fields` | array | `["title", "description", "keywords", "url"]` | Felder für Kandidatensuche |
 | `max_candidates` | int | `100` | Max. Kandidaten pro Suchfeld (1-1000, Paginierung ab >100) |
 
@@ -114,6 +111,14 @@ curl -X POST "http://localhost:8000/detect/hash/by-metadata" \
 | Parameter | Typ | Default | Beschreibung |
 |-----------|-----|---------|--------------|
 | `similarity_threshold` | float | `0.9` | Mindestähnlichkeit (0-1) |
+
+### Konfiguration
+
+Die WLO REST API Base-URL wird über die Umgebungsvariable `WLO_BASE_URL` konfiguriert:
+
+| Variable | Default | Beschreibung |
+|----------|---------|--------------|
+| `WLO_BASE_URL` | `https://repository.staging.openeduhub.net/edu-sharing/rest` | Base-URL der WLO REST API |
 
 
 ### Metadata-Objekt
@@ -136,10 +141,8 @@ curl -X POST "http://localhost:8000/detect/hash/by-metadata" \
     "url": "https://de.wikipedia.org/wiki/Islam",
     "redirect_url": null
   },
-  "method": "hash",
   "threshold": 0.9,
   "enrichment": {
-    "enriched": false,
     "enrichment_source_node_id": null,
     "enrichment_source_field": null,
     "fields_added": []
@@ -194,22 +197,26 @@ curl -X POST "http://localhost:8000/detect/hash/by-metadata" \
 
 1. **Metadaten laden**: Bei Node-ID-Anfragen werden die vollständigen Metadaten von WLO geladen
 
-2. **Kandidatensuche** (erweitert mit Normalisierung):
+2. **Metadaten-Anreicherung** (automatisch):
+   - Falls Metadaten unvollständig sind, wird versucht, fehlende Felder aus gefundenen Kandidaten zu ergänzen
+   - Bevorzugt URL-Exact-Matches, fallback auf Titel-Matches
+   - Nach Anreicherung wird eine neue Suche mit allen verfügbaren Feldern durchgeführt
+
+3. **Kandidatensuche** (erweitert mit Normalisierung):
    - `title`: Original + normalisiert (ohne Publisher-Suffix wie "- Wikipedia")
    - `description`: Suche in den ersten 100 Zeichen
    - `keywords`: Suche mit kombinierten Keywords
    - `url`: Original + normalisiert (ohne Protokoll, www, Query-Parameter)
 
-3. **URL-Prüfung** (hat Priorität!):
+4. **URL-Prüfung** (hat Priorität!):
    - Alle Kandidaten werden auf URL-Übereinstimmung geprüft
    - Normalisierte URLs werden verglichen (http://www.example.com/ = example.com)
    - **Exakte URL-Übereinstimmung = Dublette** (unabhängig vom Schwellenwert!)
 
-4. **Ähnlichkeitsberechnung** (für nicht-URL-Treffer):
+5. **Ähnlichkeitsberechnung** (für nicht-URL-Treffer):
    - **Hash**: MinHash-Signaturen + Kosinus-Ähnlichkeit
-   - **Embedding**: Sentence-Transformer + Kosinus-Ähnlichkeit
 
-5. **Ergebnis**: URL-Matches + Treffer über Schwellenwert
+6. **Ergebnis**: URL-Matches + Treffer über Schwellenwert
 
 
 ## Normalisierung

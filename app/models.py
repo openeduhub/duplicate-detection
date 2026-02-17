@@ -7,7 +7,6 @@ from enum import Enum
 import requests
 from loguru import logger
 
-from app.config import Environment
 
 
 def normalize_title(title: Optional[str]) -> Optional[str]:
@@ -453,10 +452,6 @@ class DuplicateCandidate(BaseModel):
 
 class DetectionRequest(BaseModel):
     """Base request for duplicate detection."""
-    environment: Environment = Field(
-        default=Environment.PRODUCTION,
-        description="WLO environment (production or staging)"
-    )
     search_fields: List[SearchField] = Field(
         default=[SearchField.TITLE, SearchField.DESCRIPTION, SearchField.URL],
         description="Metadata fields to use for candidate search"
@@ -466,10 +461,6 @@ class DetectionRequest(BaseModel):
         ge=1,
         le=1000,
         description="Maximum candidates per search field (pagination used if > 100)"
-    )
-    enrich_from_candidates: bool = Field(
-        default=True,
-        description="If true, enrich sparse metadata from first URL/title match to expand candidate search"
     )
 
 
@@ -519,7 +510,6 @@ class CandidateStats(BaseModel):
 
 class EnrichmentInfo(BaseModel):
     """Information about metadata enrichment from candidates."""
-    enriched: bool = Field(default=False, description="Whether metadata was enriched from candidates")
     enrichment_source_node_id: Optional[str] = Field(default=None, description="Node ID used for enrichment")
     enrichment_source_field: Optional[str] = Field(default=None, description="Field that triggered enrichment (url or title)")
     fields_added: List[str] = Field(default_factory=list, description="Fields that were added from enrichment")
@@ -528,7 +518,6 @@ class EnrichmentInfo(BaseModel):
 class DetectionResponse(BaseModel):
     """Response from duplicate detection."""
     source_metadata: Optional[ContentMetadata] = Field(default=None, description="Metadata used for detection")
-    method: str = Field(..., description="Detection method used (hash or embedding)")
     threshold: float = Field(..., description="Similarity threshold used")
     enrichment: Optional[EnrichmentInfo] = Field(default=None, description="Metadata enrichment details")
     candidate_search_results: List[CandidateStats] = Field(

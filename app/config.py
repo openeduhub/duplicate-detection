@@ -1,33 +1,23 @@
 """Configuration for WLO Duplicate Detection API."""
 
 import os
-from enum import Enum
-from typing import Dict
 from pydantic import BaseModel, Field
-
-
-class Environment(str, Enum):
-    """WLO API environments."""
-    PRODUCTION = "production"
-    STAGING = "staging"
 
 
 class WLOConfig(BaseModel):
     """WLO API configuration."""
     
-    base_urls: Dict[Environment, str] = Field(
-        default={
-            Environment.PRODUCTION: "https://redaktion.openeduhub.net/edu-sharing/rest",
-            Environment.STAGING: "https://repository.staging.openeduhub.net/edu-sharing/rest"
-        }
+    base_url: str = Field(
+        default=os.environ.get("WLO_BASE_URL", "https://repository.staging.openeduhub.net/edu-sharing/rest"),
+        description="Base URL for WLO REST API (set via WLO_BASE_URL environment variable)"
     )
     default_repository: str = Field(default="-home-")
     default_timeout: int = Field(default=60)
     max_retries: int = Field(default=3)
     
-    def get_base_url(self, environment: Environment) -> str:
-        """Get base URL for environment."""
-        return self.base_urls[environment]
+    def get_base_url(self) -> str:
+        """Get base URL for WLO API."""
+        return self.base_url
 
 
 class DetectionConfig(BaseModel):

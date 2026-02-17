@@ -138,18 +138,18 @@ async def log_requests(request: Request, call_next):
 # Helper Functions
 # ============================================================================
 
-def get_metadata_from_node(node_id: str, environment) -> tuple[ContentMetadata, str]:
+def get_metadata_from_node(node_id: str) -> tuple[ContentMetadata, str]:
     """
     Fetch and extract metadata from a WLO node.
     
     Returns:
         Tuple of (ContentMetadata, error_message or None)
     """
-    client = WLOClient(environment=environment)
+    client = WLOClient()
     
     node_data = client.get_node_metadata(node_id)
     if not node_data:
-        return None, f"Node {node_id} not found in {environment.value} environment"
+        return None, f"Node {node_id} not found"
     
     metadata = client.extract_content_metadata(node_data)
     if not metadata.has_content():
@@ -377,26 +377,36 @@ Erkennt Dubletten für einen bestehenden WLO-Inhalt anhand seiner Node-ID.
 
 **Ablauf:**
 1. Metadaten werden von WLO geladen
-2. Kandidatensuche über ausgewählte Felder
-3. MinHash-Vergleich mit Schwellenwert
+2. Metadaten-Anreicherung (automatisch, wenn unvollständig)
+3. Kandidatensuche über ausgewählte Felder
+4. MinHash-Vergleich mit Schwellenwert
 
-**Schwellenwert:** 0.8 bedeutet 80% Ähnlichkeit der Shingles.
+**Schwellenwert:** 0.9 bedeutet 90% Ähnlichkeit der Shingles.
 
 **Rate Limit:** 100 Requests pro Minute
+
+**WLO-Konfiguration:** Die WLO REST API Base-URL wird über die Umgebungsvariable `WLO_BASE_URL` konfiguriert.
+Default: `https://repository.staging.openeduhub.net/edu-sharing/rest`
+
+**Request-Parameter:**
+- `node_id` (string, erforderlich): Node-ID des zu prüfenden Inhalts
+- `similarity_threshold` (float, default: 0.9): Mindestähnlichkeit (0-1)
+- `search_fields` (array, default: ["title", "description", "url"]): Suchfelder
+- `max_candidates` (int, default: 100): Max. Kandidaten pro Feld (1-1000)
     """
 )
 @limiter.limit("100/minute")
 async def detect_hash_by_node(request: Request, body: HashDetectionRequest):
     """Hash-based duplicate detection by node ID."""
-    logger.info(f"Hash detection for node {body.node_id} in {body.environment.value}")
+    logger.info(f"Hash detection for node {body.node_id}")
     
     # Fetch metadata
-    metadata, error = get_metadata_from_node(body.node_id, body.environment)
+    metadata, error = get_metadata_from_node(body.node_id)
     if error:
         raise HTTPException(status_code=400, detail=error)
     
     # Search for candidates
-    client = WLOClient(environment=body.environment)
+    client = WLOClient()
     candidates, search_info = client.search_candidates(
         metadata=metadata,
         search_fields=body.search_fields,
@@ -404,32 +414,31 @@ async def detect_hash_by_node(request: Request, body: HashDetectionRequest):
         exclude_node_id=body.node_id
     )
     
-    # Enrich metadata from candidates if enabled (usually no-op for node lookups)
+    # Enrich metadata from candidates (always enabled)
     enrichment_info = None
-    if body.enrich_from_candidates:
-        metadata, enrichment_info = enrich_metadata_from_candidates(metadata, candidates, client)
-        
-        # If enriched, re-search with all fields to expand candidate pool
-        if enrichment_info.enriched:
-            logger.info(f"Re-searching with enriched metadata (added: {enrichment_info.fields_added})")
-            all_fields = [SearchField.TITLE, SearchField.DESCRIPTION, SearchField.KEYWORDS, SearchField.URL]
-            enriched_candidates, enriched_search_info = client.search_candidates(
-                metadata=metadata,
-                search_fields=all_fields,
-                max_candidates=body.max_candidates,
-                exclude_node_id=body.node_id
-            )
-            for field, field_candidates in enriched_candidates.items():
-                if field not in candidates:
-                    candidates[field] = field_candidates
-                else:
-                    existing_ids = {c.get("ref", {}).get("id") for c in candidates[field]}
-                    for c in field_candidates:
-                        if c.get("ref", {}).get("id") not in existing_ids:
-                            candidates[field].append(c)
-            for field, info in enriched_search_info.items():
-                if field not in search_info:
-                    search_info[field] = info
+    metadata, enrichment_info = enrich_metadata_from_candidates(metadata, candidates, client)
+    
+    # If enriched, re-search with all fields to expand candidate pool
+    if enrichment_info.fields_added:
+        logger.info(f"Re-searching with enriched metadata (added: {enrichment_info.fields_added})")
+        all_fields = [SearchField.TITLE, SearchField.DESCRIPTION, SearchField.KEYWORDS, SearchField.URL]
+        enriched_candidates, enriched_search_info = client.search_candidates(
+            metadata=metadata,
+            search_fields=all_fields,
+            max_candidates=body.max_candidates,
+            exclude_node_id=body.node_id
+        )
+        for field, field_candidates in enriched_candidates.items():
+            if field not in candidates:
+                candidates[field] = field_candidates
+            else:
+                existing_ids = {c.get("ref", {}).get("id") for c in candidates[field]}
+                for c in field_candidates:
+                    if c.get("ref", {}).get("id") not in existing_ids:
+                        candidates[field].append(c)
+        for field, info in enriched_search_info.items():
+            if field not in search_info:
+                search_info[field] = info
     
     total_candidates = count_candidates(candidates)
     
@@ -444,7 +453,6 @@ async def detect_hash_by_node(request: Request, body: HashDetectionRequest):
     
     return DetectionResponse(
         source_metadata=metadata,
-        method="hash",
         threshold=body.similarity_threshold,
         enrichment=enrichment_info,
         candidate_search_results=candidate_stats,
@@ -465,15 +473,28 @@ Erkennt Dubletten für einen neuen Inhalt anhand direkt eingegebener Metadaten.
 - Neue, noch nicht publizierte Inhalte
 - Vorab-Prüfung vor dem Import
 
-**Schwellenwert:** 0.8 bedeutet 80% Ähnlichkeit der Shingles.
+**Schwellenwert:** 0.9 bedeutet 90% Ähnlichkeit der Shingles.
 
 **Rate Limit:** 100 Requests pro Minute
+
+**WLO-Konfiguration:** Die WLO REST API Base-URL wird über die Umgebungsvariable `WLO_BASE_URL` konfiguriert.
+Default: `https://repository.staging.openeduhub.net/edu-sharing/rest`
+
+**Request-Parameter:**
+- `metadata` (object, erforderlich): Metadaten des zu prüfenden Inhalts
+  - `title` (string, optional): Titel des Inhalts
+  - `description` (string, optional): Beschreibungstext
+  - `keywords` (array[string], optional): Liste von Schlagwörtern
+  - `url` (string, optional): URL des Inhalts
+- `similarity_threshold` (float, default: 0.9): Mindestähnlichkeit (0-1)
+- `search_fields` (array, default: ["title", "description", "url"]): Suchfelder
+- `max_candidates` (int, default: 100): Max. Kandidaten pro Feld (1-1000)
     """
 )
 @limiter.limit("100/minute")
 async def detect_hash_by_metadata(request: Request, body: HashMetadataRequest):
     """Hash-based duplicate detection by metadata."""
-    logger.info(f"Hash detection by metadata in {body.environment.value}")
+    logger.info(f"Hash detection by metadata")
     
     if not body.metadata.has_content():
         raise HTTPException(
@@ -496,40 +517,39 @@ async def detect_hash_by_metadata(request: Request, body: HashMetadataRequest):
             logger.info(f"Resolved redirect for input URL: {metadata.url[:50]}... -> {final_url[:50]}...")
     
     # Search for candidates
-    client = WLOClient(environment=body.environment)
+    client = WLOClient()
     candidates, search_info = client.search_candidates(
         metadata=metadata,
         search_fields=body.search_fields,
         max_candidates=body.max_candidates
     )
     
-    # Enrich metadata from candidates if enabled
+    # Enrich metadata from candidates (always enabled)
     enrichment_info = None
-    if body.enrich_from_candidates:
-        metadata, enrichment_info = enrich_metadata_from_candidates(metadata, candidates, client)
-        
-        # If enriched, re-search with all fields to expand candidate pool
-        if enrichment_info.enriched:
-            logger.info(f"Re-searching with enriched metadata (added: {enrichment_info.fields_added})")
-            all_fields = [SearchField.TITLE, SearchField.DESCRIPTION, SearchField.KEYWORDS, SearchField.URL]
-            enriched_candidates, enriched_search_info = client.search_candidates(
-                metadata=metadata,
-                search_fields=all_fields,
-                max_candidates=body.max_candidates
-            )
-            # Merge candidates (enriched search may find more)
-            for field, field_candidates in enriched_candidates.items():
-                if field not in candidates:
-                    candidates[field] = field_candidates
-                else:
-                    existing_ids = {c.get("ref", {}).get("id") for c in candidates[field]}
-                    for c in field_candidates:
-                        if c.get("ref", {}).get("id") not in existing_ids:
-                            candidates[field].append(c)
-            # Merge search info
-            for field, info in enriched_search_info.items():
-                if field not in search_info:
-                    search_info[field] = info
+    metadata, enrichment_info = enrich_metadata_from_candidates(metadata, candidates, client)
+    
+    # If enriched, re-search with all fields to expand candidate pool
+    if enrichment_info.fields_added:
+        logger.info(f"Re-searching with enriched metadata (added: {enrichment_info.fields_added})")
+        all_fields = [SearchField.TITLE, SearchField.DESCRIPTION, SearchField.KEYWORDS, SearchField.URL]
+        enriched_candidates, enriched_search_info = client.search_candidates(
+            metadata=metadata,
+            search_fields=all_fields,
+            max_candidates=body.max_candidates
+        )
+        # Merge candidates (enriched search may find more)
+        for field, field_candidates in enriched_candidates.items():
+            if field not in candidates:
+                candidates[field] = field_candidates
+            else:
+                existing_ids = {c.get("ref", {}).get("id") for c in candidates[field]}
+                for c in field_candidates:
+                    if c.get("ref", {}).get("id") not in existing_ids:
+                        candidates[field].append(c)
+        # Merge search info
+        for field, info in enriched_search_info.items():
+            if field not in search_info:
+                search_info[field] = info
     
     total_candidates = count_candidates(candidates)
     
@@ -544,7 +564,6 @@ async def detect_hash_by_metadata(request: Request, body: HashMetadataRequest):
     
     return DetectionResponse(
         source_metadata=metadata,
-        method="hash",
         threshold=body.similarity_threshold,
         enrichment=enrichment_info,
         candidate_search_results=candidate_stats,

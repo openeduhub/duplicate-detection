@@ -6,21 +6,20 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from loguru import logger
 
-from app.config import Environment, wlo_config
+from app.config import wlo_config
 from app.models import ContentMetadata, SearchField, normalize_title, normalize_url, generate_url_search_variants, resolve_url_redirect
 
 
 class WLOClient:
     """Client for WLO edu-sharing API."""
     
-    def __init__(self, environment: Environment = Environment.PRODUCTION):
-        """Initialize client for specified environment."""
-        self.environment = environment
-        self.base_url = wlo_config.get_base_url(environment)
+    def __init__(self):
+        """Initialize client."""
+        self.base_url = wlo_config.get_base_url()
         self.repository = wlo_config.default_repository
         self.session = self._create_session()
         
-        logger.info(f"WLO Client initialized for {environment.value}: {self.base_url}")
+        logger.info(f"WLO Client initialized: {self.base_url}")
     
     def _create_session(self) -> requests.Session:
         """Create requests session with retry configuration."""
