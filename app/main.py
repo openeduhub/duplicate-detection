@@ -37,10 +37,7 @@ logger.add(
 )
 
 # Rate limiter setup
-limiter = Limiter(key_func=get_remote_address)
-
-# Request timeout (seconds)
-REQUEST_TIMEOUT = 55
+limiter = Limiter(key_func=get_remote_address, default_limits=[detection_config.rate_limit])
 
 
 @asynccontextmanager
@@ -196,6 +193,29 @@ def build_candidate_stats(search_info: dict, field_similarities: dict = None) ->
             normalized_count=info.get("normalized_count")
         ))
     return stats
+
+
+def get_effective_max_candidates(requested: int | None) -> int:
+    """
+    Get effective max_candidates, respecting config limit.
+    
+    Args:
+        requested: Requested max_candidates from client (or None for default)
+        
+    Returns:
+        Effective max_candidates value (respects config limit)
+    """
+    limit = detection_config.max_candidates_limit
+    
+    if requested is None:
+        return limit
+    
+    # User can only request smaller values
+    if requested > limit:
+        logger.warning(f"Requested max_candidates {requested} exceeds limit {limit}, using {limit}")
+        return limit
+    
+    return requested
 
 
 def enrich_metadata_from_candidates(
@@ -375,24 +395,11 @@ async def health_check():
     description="""
 Erkennt Dubletten für einen bestehenden WLO-Inhalt anhand seiner Node-ID.
 
-**Ablauf:**
-1. Metadaten werden von WLO geladen
-2. Metadaten-Anreicherung (automatisch, wenn unvollständig)
-3. Kandidatensuche über ausgewählte Felder
-4. MinHash-Vergleich mit Schwellenwert
-
-**Schwellenwert:** 0.9 bedeutet 90% Ähnlichkeit der Shingles.
-
-**Rate Limit:** 100 Requests pro Minute
-
-**WLO-Konfiguration:** Die WLO REST API Base-URL wird über die Umgebungsvariable `WLO_BASE_URL` konfiguriert.
-Default: `https://repository.staging.openeduhub.net/edu-sharing/rest`
-
 **Request-Parameter:**
 - `node_id` (string, erforderlich): Node-ID des zu prüfenden Inhalts
 - `similarity_threshold` (float, default: 0.9): Mindestähnlichkeit (0-1)
 - `search_fields` (array, default: ["title", "description", "url"]): Suchfelder
-- `max_candidates` (int, default: 100): Max. Kandidaten pro Feld (1-1000)
+- `max_candidates` (integer, optional): Max. Kandidaten pro Feld (respektiert MAX_CANDIDATES Umgebungsvariable)
     """
 )
 @limiter.limit("100/minute")
@@ -405,12 +412,13 @@ async def detect_hash_by_node(request: Request, body: HashDetectionRequest):
     if error:
         raise HTTPException(status_code=400, detail=error)
     
-    # Search for candidates
+    # Search for candidates (respect max_candidates limit)
     client = WLOClient()
+    effective_max_candidates = get_effective_max_candidates(body.max_candidates)
     candidates, search_info = client.search_candidates(
         metadata=metadata,
         search_fields=body.search_fields,
-        max_candidates=body.max_candidates,
+        max_candidates=effective_max_candidates,
         exclude_node_id=body.node_id
     )
     
@@ -469,17 +477,6 @@ async def detect_hash_by_node(request: Request, body: HashDetectionRequest):
     description="""
 Erkennt Dubletten für einen neuen Inhalt anhand direkt eingegebener Metadaten.
 
-**Ideal für:**
-- Neue, noch nicht publizierte Inhalte
-- Vorab-Prüfung vor dem Import
-
-**Schwellenwert:** 0.9 bedeutet 90% Ähnlichkeit der Shingles.
-
-**Rate Limit:** 100 Requests pro Minute
-
-**WLO-Konfiguration:** Die WLO REST API Base-URL wird über die Umgebungsvariable `WLO_BASE_URL` konfiguriert.
-Default: `https://repository.staging.openeduhub.net/edu-sharing/rest`
-
 **Request-Parameter:**
 - `metadata` (object, erforderlich): Metadaten des zu prüfenden Inhalts
   - `title` (string, optional): Titel des Inhalts
@@ -488,7 +485,7 @@ Default: `https://repository.staging.openeduhub.net/edu-sharing/rest`
   - `url` (string, optional): URL des Inhalts
 - `similarity_threshold` (float, default: 0.9): Mindestähnlichkeit (0-1)
 - `search_fields` (array, default: ["title", "description", "url"]): Suchfelder
-- `max_candidates` (int, default: 100): Max. Kandidaten pro Feld (1-1000)
+- `max_candidates` (integer, optional): Max. Kandidaten pro Feld (respektiert MAX_CANDIDATES Umgebungsvariable)
     """
 )
 @limiter.limit("100/minute")

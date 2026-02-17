@@ -456,11 +456,10 @@ class DetectionRequest(BaseModel):
         default=[SearchField.TITLE, SearchField.DESCRIPTION, SearchField.URL],
         description="Metadata fields to use for candidate search"
     )
-    max_candidates: int = Field(
-        default=100,
+    max_candidates: Optional[int] = Field(
+        default=None,
         ge=1,
-        le=1000,
-        description="Maximum candidates per search field (pagination used if > 100)"
+        description="Maximum candidates per search field (optional, uses config default if not specified, cannot exceed config limit)"
     )
 
 

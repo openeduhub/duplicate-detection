@@ -43,6 +43,10 @@
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `WLO_BASE_URL` | `https://repository.staging.openeduhub.net/edu-sharing/rest` | Base URL of the WLO REST API |
+| `WLO_TIMEOUT` | `60` | Timeout for WLO API requests in seconds |
+| `WLO_MAX_RETRIES` | `3` | Maximum number of retries for WLO API requests |
+| `MAX_CANDIDATES` | `40` | Maximum candidates per search field (cannot be exceeded by client) |
+| `RATE_LIMIT` | `100/minute` | Rate limit for detection endpoints |
 | `LOG_LEVEL` | `INFO` | Log level (DEBUG, INFO, WARNING, ERROR) |
 
 ### Example for Kubernetes Deployment

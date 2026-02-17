@@ -60,7 +60,7 @@ Fetches metadata for a WLO node and searches for duplicate content. The service 
 | `node_id` | string | required | Node ID of the content to check |
 | `similarity_threshold` | float | 0.9 | Minimum similarity score (0-1) |
 | `search_fields` | array | `["title", "description", "url"]` | Metadata fields to use for candidate search |
-| `max_candidates` | integer | 100 | Maximum candidates per search field (1-1000) |
+| `max_candidates` | integer | optional | Maximum candidates per search field (uses config default if not specified, cannot exceed config limit) |
 
 **Example Request:**
 ```bash
