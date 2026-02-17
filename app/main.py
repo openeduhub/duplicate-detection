@@ -59,7 +59,14 @@ API für die Erkennung von Dubletten (ähnlichen Inhalten) im WLO-Repository.
 
 ## Funktionen
 
-- **Hash-basierte Erkennung**: Nutzt MinHash für schnelle Ähnlichkeitsberechnung basierend auf Textshingles
+- **Hash-basierte Erkennung (MinHash)**: Schnelle Ähnlichkeitsberechnung basierend auf Textshingles
+- **URL-Normalisierung**: Erkennt identische URLs trotz unterschiedlicher Schreibweise
+- **Titel-Normalisierung**: Entfernt Publisher-Suffixe für bessere Kandidatensuche
+- **URL-Exact-Match**: URLs werden immer verglichen - exakte Übereinstimmung = Dublette
+- **Flexible Eingabe**: Per Node-ID oder direkte Metadateneingabe
+- **Erweiterte Kandidatensuche**: Original + normalisierte Suchen für mehr Treffer
+- **Paginierung**: Automatische Paginierung für große Kandidatenmengen (>100)
+- **Rate Limiting**: Schutz vor Überlastung (100 Requests/Minute für Detection-Endpoints)
 
 ## Ablauf
 
@@ -76,6 +83,19 @@ API für die Erkennung von Dubletten (ähnlichen Inhalten) im WLO-Repository.
 
 - **Per Node-ID**: Für bestehende WLO-Inhalte
 - **Per Metadaten**: Für neue, noch nicht publizierte Inhalte
+
+## Response-Format
+
+Die API gibt strukturierte Responses mit detaillierten Informationen zurück:
+- `source_metadata`: Die verwendeten Metadaten
+- `method`: Erkennungsmethode (hash)
+- `threshold`: Verwendeter Schwellenwert
+- `enrichment`: Informationen zur Metadaten-Anreicherung
+- `candidate_search_results`: Suchstatistiken pro Feld
+- `total_candidates_checked`: Gesamtzahl geprüfter Kandidaten
+- `duplicates`: Liste der gefundenen Dubletten
+
+Bei Fehlern wird eine HTTP-Exception mit entsprechendem Status-Code zurückgegeben.
     """,
     version="1.0.0",
     license_info={
@@ -373,13 +393,7 @@ async def detect_hash_by_node(request: Request, body: HashDetectionRequest):
     # Fetch metadata
     metadata, error = get_metadata_from_node(body.node_id, body.environment)
     if error:
-        return DetectionResponse(
-            success=False,
-            source_node_id=body.node_id,
-            method="hash",
-            threshold=body.similarity_threshold,
-            error=error
-        )
+        raise HTTPException(status_code=400, detail=error)
     
     # Search for candidates
     client = WLOClient(environment=body.environment)
@@ -429,8 +443,6 @@ async def detect_hash_by_node(request: Request, body: HashDetectionRequest):
     candidate_stats = build_candidate_stats(search_info, field_similarities)
     
     return DetectionResponse(
-        success=True,
-        source_node_id=body.node_id,
         source_metadata=metadata,
         method="hash",
         threshold=body.similarity_threshold,
@@ -464,12 +476,9 @@ async def detect_hash_by_metadata(request: Request, body: HashMetadataRequest):
     logger.info(f"Hash detection by metadata in {body.environment.value}")
     
     if not body.metadata.has_content():
-        return DetectionResponse(
-            success=False,
-            source_metadata=body.metadata,
-            method="hash",
-            threshold=body.similarity_threshold,
-            error="No searchable content provided (need at least title, description, keywords, or URL)"
+        raise HTTPException(
+            status_code=400,
+            detail="No searchable content provided (need at least title, description, keywords, or URL)"
         )
     
     # Resolve URL redirects if URL is provided and no redirect_url set yet
@@ -534,7 +543,6 @@ async def detect_hash_by_metadata(request: Request, body: HashMetadataRequest):
     candidate_stats = build_candidate_stats(search_info, field_similarities)
     
     return DetectionResponse(
-        success=True,
         source_metadata=metadata,
         method="hash",
         threshold=body.similarity_threshold,

@@ -129,16 +129,21 @@ curl -X POST "http://localhost:8000/detect/hash/by-metadata" \
 
 ```json
 {
-  "success": true,
-  "source_node_id": "12345678-...",
   "source_metadata": {
     "title": "Islam - Wikipedia",
     "description": "...",
     "keywords": ["..."],
-    "url": "https://de.wikipedia.org/wiki/Islam"
+    "url": "https://de.wikipedia.org/wiki/Islam",
+    "redirect_url": null
   },
   "method": "hash",
   "threshold": 0.9,
+  "enrichment": {
+    "enriched": false,
+    "enrichment_source_node_id": null,
+    "enrichment_source_field": null,
+    "fields_added": []
+  },
   "candidate_search_results": [
     {
       "field": "title",
@@ -164,21 +169,26 @@ curl -X POST "http://localhost:8000/detect/hash/by-metadata" \
     {
       "node_id": "abc123-...",
       "title": "Islam",
+      "description": null,
+      "keywords": null,
+      "url": "https://de.wikipedia.org/wiki/Islam",
       "similarity_score": 1.0,
-      "match_source": "url_exact",
-      "url": "https://de.wikipedia.org/wiki/Islam"
+      "match_source": "url_exact"
     },
     {
       "node_id": "def456-...",
       "title": "Ähnlicher Inhalt",
+      "description": null,
+      "keywords": null,
+      "url": "https://...",
       "similarity_score": 0.92,
-      "match_source": "title",
-      "url": "https://..."
+      "match_source": "title"
     }
-  ],
-  "error": null
+  ]
 }
 ```
+
+**Hinweis:** Bei Fehlern wird eine HTTP-Exception mit entsprechendem Status-Code zurückgegeben (z.B. 400 Bad Request).
 
 ## Ablauf der Erkennung
 

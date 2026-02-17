@@ -527,8 +527,6 @@ class EnrichmentInfo(BaseModel):
 
 class DetectionResponse(BaseModel):
     """Response from duplicate detection."""
-    success: bool = Field(default=True)
-    source_node_id: Optional[str] = Field(default=None, description="Node ID of source content (if provided)")
     source_metadata: Optional[ContentMetadata] = Field(default=None, description="Metadata used for detection")
     method: str = Field(..., description="Detection method used (hash or embedding)")
     threshold: float = Field(..., description="Similarity threshold used")
@@ -539,7 +537,6 @@ class DetectionResponse(BaseModel):
     )
     total_candidates_checked: int = Field(default=0, description="Total unique candidates checked")
     duplicates: List[DuplicateCandidate] = Field(default_factory=list, description="List of potential duplicates")
-    error: Optional[str] = Field(default=None, description="Error message if any")
 
 
 class HealthResponse(BaseModel):
