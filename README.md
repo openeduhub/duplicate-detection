@@ -5,16 +5,13 @@ FastAPI-basierter Dienst zur Erkennung von Dubletten (ähnlichen Inhalten) im WL
 ## Features
 
 - **Hash-basierte Erkennung (MinHash)**: Schnelle Ähnlichkeitsberechnung basierend auf Textshingles
-- **Embedding-basierte Erkennung**: Semantische Ähnlichkeit mit Sentence-Transformers (GPU-Unterstützung)
 - **URL-Normalisierung**: Erkennt identische URLs trotz unterschiedlicher Schreibweise
 - **Titel-Normalisierung**: Entfernt Publisher-Suffixe für bessere Kandidatensuche
 - **URL-Exact-Match**: URLs werden immer verglichen - exakte Übereinstimmung = Dublette
-- **Embedding-API**: Separater Endpunkt für Embedding-Generierung (ohne Rate Limit)
 - **Flexible Eingabe**: Per Node-ID oder direkte Metadateneingabe
 - **Erweiterte Kandidatensuche**: Original + normalisierte Suchen für mehr Treffer
 - **Paginierung**: Automatische Paginierung für große Kandidatenmengen (>100)
 - **Rate Limiting**: Schutz vor Überlastung (100 Requests/Minute für Detection-Endpoints)
-- **Google Colab kompatibel**: Nutzt GPU wenn verfügbar
 
 ## Installation
 
@@ -101,80 +98,6 @@ curl -X POST "http://localhost:8000/detect/hash/by-metadata" \
   }'
 ```
 
-### Embedding-basierte Erkennung
-
-#### `POST /detect/embedding/by-node`
-Semantische Dublettenerkennung per Node-ID.
-
-**Beispiel:** Dublette finden für einen bestehenden Inhalt auf Production:
-
-```bash
-curl -X POST "http://localhost:8000/detect/embedding/by-node" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "node_id": "948f53c2-3e3e-4247-8af9-e39cb256aa20",
-    "environment": "production",
-    "similarity_threshold": 0.95
-  }'
-```
-
-#### `POST /detect/embedding/by-metadata`
-Semantische Dublettenerkennung per direkter Metadateneingabe.
-
-```bash
-curl -X POST "http://localhost:8000/detect/embedding/by-metadata" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "metadata": {
-      "title": "Mathematik für Grundschüler",
-      "description": "Lernen Sie die Grundlagen der Mathematik"
-    },
-    "environment": "production",
-    "similarity_threshold": 0.95
-  }'
-```
-
-### Embedding-Generierung (ohne Rate Limit)
-
-#### `POST /embed`
-Erzeugt einen 384-dimensionalen Embedding-Vektor für einen Text.
-
-```bash
-curl -X POST "http://localhost:8000/embed" \
-  -H "Content-Type: application/json" \
-  -d '{"text": "Dies ist ein Beispieltext"}'
-```
-
-**Response:**
-```json
-{
-  "success": true,
-  "text": "Dies ist ein Beispieltext",
-  "embedding": [0.0234, -0.0567, ...],
-  "dimensions": 384,
-  "model": "paraphrase-multilingual-MiniLM-L12-v2"
-}
-```
-
-#### `POST /embed/batch`
-Erzeugt Embeddings für mehrere Texte gleichzeitig (effizienter als Einzelaufrufe).
-
-```bash
-curl -X POST "http://localhost:8000/embed/batch" \
-  -H "Content-Type: application/json" \
-  -d '{"texts": ["Text 1", "Text 2", "Text 3"]}'
-```
-
-**Response:**
-```json
-{
-  "success": true,
-  "embeddings": [[...], [...], [...]],
-  "dimensions": 384,
-  "count": 3,
-  "model": "paraphrase-multilingual-MiniLM-L12-v2"
-}
-```
 
 ## Request-Parameter
 
@@ -192,11 +115,6 @@ curl -X POST "http://localhost:8000/embed/batch" \
 |-----------|-----|---------|--------------|
 | `similarity_threshold` | float | `0.9` | Mindestähnlichkeit (0-1) |
 
-### Embedding-spezifisch
-
-| Parameter | Typ | Default | Beschreibung |
-|-----------|-----|---------|--------------|
-| `similarity_threshold` | float | `0.95` | Mindest-Kosinus-Ähnlichkeit (0-1) |
 
 ### Metadata-Objekt
 
@@ -283,14 +201,6 @@ curl -X POST "http://localhost:8000/embed/batch" \
 
 5. **Ergebnis**: URL-Matches + Treffer über Schwellenwert
 
-## Unterschied Hash vs. Embedding
-
-| Aspekt | Hash (MinHash) | Embedding |
-|--------|----------------|-----------|
-| **Geschwindigkeit** | Sehr schnell | Langsamer (GPU empfohlen) |
-| **Erkennung** | Wörtliche Ähnlichkeit | Semantische Ähnlichkeit |
-| **Modell** | Shingle-basiert | Multilingual MiniLM |
-| **Ideal für** | Exakte/nahe Duplikate | Umformulierte Texte |
 
 ## Normalisierung
 
@@ -326,30 +236,6 @@ Unterstützte Suffixe: Wikipedia, Klexikon, Wikibooks, planet-schule, Lehrer-Onl
 | `keywords` | Keyword-Treffer | Muss ≥ threshold sein |
 | `url` | URL-Suche (nicht exakt) | Muss ≥ threshold sein |
 
-## Embedding-Modell
-
-**Standard-Modell:** `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`
-- 50+ Sprachen unterstützt
-- 384-dimensionale Embeddings
-- GPU-Beschleunigung wenn verfügbar
-
-### Modell wechseln
-
-**Umgebungsvariable:**
-```bash
-# Linux/Mac
-export EMBEDDING_MODEL="sentence-transformers/all-MiniLM-L6-v2"
-
-# Windows PowerShell
-$env:EMBEDDING_MODEL="sentence-transformers/all-MiniLM-L6-v2"
-```
-
-**Oder `.env` Datei:**
-```
-EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2
-```
-
-Mehr Infos: https://huggingface.co/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
 
 ## Entwicklung
 
@@ -391,7 +277,6 @@ Umgebungsvariablen in `docker-compose.yml` oder via `-e`:
 
 | Variable | Default | Beschreibung |
 |----------|---------|--------------|
-| `EMBEDDING_MODEL` | `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` | Embedding-Modell |
 | `LOG_LEVEL` | `INFO` | Log-Level |
 
 ### Dateien
@@ -410,24 +295,12 @@ Umgebungsvariablen in `docker-compose.yml` oder via `-e`:
 - **Non-root User**: Sicherheit durch unprivilegierten Benutzer
 - **Restart Policy**: Automatischer Neustart bei Fehler
 
-## Google Colab
-
-Die API kann in Google Colab mit GPU-Unterstützung betrieben werden:
-
-```python
-# In Colab ausführen
-!pip install -q sentence-transformers fastapi uvicorn
-
-# GPU wird automatisch erkannt und genutzt
-```
 
 ## Rate Limits
 
 | Endpunkt | Rate Limit |
 |----------|------------|
 | `/detect/*` | 100/Minute |
-| `/embed` | Kein Limit |
-| `/embed/batch` | Kein Limit |
 | `/health` | Kein Limit |
 
 ## Credits

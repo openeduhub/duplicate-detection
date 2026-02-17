@@ -503,24 +503,6 @@ class HashMetadataRequest(MetadataRequest):
     )
 
 
-class EmbeddingDetectionRequest(NodeIdRequest):
-    """Request for embedding-based duplicate detection by Node ID."""
-    similarity_threshold: float = Field(
-        default=0.95,
-        ge=0.0,
-        le=1.0,
-        description="Minimum cosine similarity for embedding matching (0-1)"
-    )
-
-
-class EmbeddingMetadataRequest(MetadataRequest):
-    """Request for embedding-based detection with direct metadata."""
-    similarity_threshold: float = Field(
-        default=0.95,
-        ge=0.0,
-        le=1.0,
-        description="Minimum cosine similarity for embedding matching (0-1)"
-    )
 
 
 class CandidateStats(BaseModel):
@@ -564,37 +546,6 @@ class HealthResponse(BaseModel):
     """Health check response."""
     status: str = Field(default="healthy")
     hash_detection_available: bool = Field(default=True, description="Hash-based detection is always available")
-    embedding_detection_available: bool = Field(default=False, description="Whether embedding detection is available")
-    embedding_model_loaded: bool = Field(default=False, description="Whether embedding model is loaded")
-    embedding_model_name: str = Field(default="", description="Name of the configured embedding model")
     version: str = Field(default="1.0.0")
 
 
-class EmbeddingRequest(BaseModel):
-    """Request for text embedding."""
-    text: str = Field(..., description="Text to embed", min_length=1)
-    
-
-class EmbeddingBatchRequest(BaseModel):
-    """Request for batch text embedding."""
-    texts: List[str] = Field(..., description="List of texts to embed", min_length=1)
-
-
-class EmbeddingResponse(BaseModel):
-    """Response with embedding vector."""
-    success: bool = Field(default=True)
-    text: str = Field(..., description="Input text")
-    embedding: List[float] = Field(..., description="Embedding vector")
-    dimensions: int = Field(..., description="Number of dimensions")
-    model: str = Field(..., description="Model used for embedding")
-    error: Optional[str] = Field(default=None)
-
-
-class EmbeddingBatchResponse(BaseModel):
-    """Response with multiple embedding vectors."""
-    success: bool = Field(default=True)
-    embeddings: List[List[float]] = Field(..., description="List of embedding vectors")
-    dimensions: int = Field(..., description="Number of dimensions per embedding")
-    count: int = Field(..., description="Number of embeddings returned")
-    model: str = Field(..., description="Model used for embedding")
-    error: Optional[str] = Field(default=None)

@@ -14,24 +14,17 @@ import sys
 from app.models import (
     HashDetectionRequest,
     HashMetadataRequest,
-    EmbeddingDetectionRequest,
-    EmbeddingMetadataRequest,
     DetectionResponse,
     HealthResponse,
     ContentMetadata,
     SearchField,
     CandidateStats,
-    EmbeddingRequest,
-    EmbeddingBatchRequest,
-    EmbeddingResponse,
-    EmbeddingBatchResponse,
     EnrichmentInfo,
     resolve_url_redirect,
     normalize_url,
 )
 from app.wlo_client import WLOClient
 from app.hash_detector import hash_detector
-from app.embedding_detector import embedding_detector, is_model_loaded, is_embedding_available, get_current_model_name
 from app.config import detection_config
 
 # Configure logging with JSON format for production
@@ -67,7 +60,6 @@ API für die Erkennung von Dubletten (ähnlichen Inhalten) im WLO-Repository.
 ## Funktionen
 
 - **Hash-basierte Erkennung**: Nutzt MinHash für schnelle Ähnlichkeitsberechnung basierend auf Textshingles
-- **Embedding-basierte Erkennung**: Nutzt Sentence-Transformers für semantische Ähnlichkeit
 
 ## Ablauf
 
@@ -77,7 +69,7 @@ API für die Erkennung von Dubletten (ähnlichen Inhalten) im WLO-Repository.
    - Beschreibung
    - Keywords
    - URL
-3. **Ähnlichkeitsberechnung**: Vergleich mit Hash- oder Embedding-Verfahren
+3. **Ähnlichkeitsberechnung**: Vergleich mit Hash-Verfahren
 4. **Ergebnis**: Liste der potenziellen Duplikate mit Ähnlichkeitswerten
 
 ## Eingabemöglichkeiten
@@ -340,16 +332,13 @@ def enrich_metadata_from_candidates(
     response_model=HealthResponse,
     tags=["Status"],
     summary="Health Check",
-    description="Prüft den Status der API und ob das Embedding-Modell geladen ist."
+    description="Prüft den Status der API."
 )
 async def health_check():
     """Check API health status."""
     return HealthResponse(
         status="healthy",
         hash_detection_available=True,
-        embedding_detection_available=is_embedding_available(),
-        embedding_model_loaded=is_model_loaded(),
-        embedding_model_name=get_current_model_name(),
         version="1.0.0"
     )
 
@@ -560,351 +549,9 @@ async def detect_hash_by_metadata(request: Request, body: HashMetadataRequest):
 # Embedding-Based Detection Endpoints
 # ============================================================================
 
-@app.post(
-    "/detect/embedding/by-node",
-    response_model=DetectionResponse,
-    tags=["Embedding-basierte Erkennung"],
-    summary="Dublettenerkennung per Node-ID (Embedding)",
-    description="""
-Erkennt semantisch ähnliche Inhalte für einen bestehenden WLO-Inhalt.
-
-**Modell:** Konfigurierbar (siehe /health für aktuelles Modell)
-
-**Vorteile:**
-- Erkennt auch semantisch ähnliche Inhalte (nicht nur wörtliche Übereinstimmungen)
-- Besser für umformulierte Texte
-
-**Hinweis:** Beim ersten Aufruf wird das Modell geladen (kann einige Sekunden dauern).
-
-**Schwellenwert:** 0.95 (Standard) bedeutet 95% semantische Ähnlichkeit.
-
-**Rate Limit:** 100 Requests pro Minute
-    """
-)
-@limiter.limit("100/minute")
-async def detect_embedding_by_node(request: Request, body: EmbeddingDetectionRequest):
-    """Embedding-based duplicate detection by node ID."""
-    logger.info(f"Embedding detection for node {body.node_id} in {body.environment.value}")
-    
-    # Fetch metadata
-    metadata, error = get_metadata_from_node(body.node_id, body.environment)
-    if error:
-        return DetectionResponse(
-            success=False,
-            source_node_id=body.node_id,
-            method="embedding",
-            threshold=body.similarity_threshold,
-            error=error
-        )
-    
-    # Search for candidates
-    client = WLOClient(environment=body.environment)
-    candidates, search_info = client.search_candidates(
-        metadata=metadata,
-        search_fields=body.search_fields,
-        max_candidates=body.max_candidates,
-        exclude_node_id=body.node_id
-    )
-    
-    # Enrich metadata from candidates if enabled (usually no-op for node lookups)
-    enrichment_info = None
-    if body.enrich_from_candidates:
-        metadata, enrichment_info = enrich_metadata_from_candidates(metadata, candidates, client)
-        
-        if enrichment_info.enriched:
-            logger.info(f"Re-searching with enriched metadata (added: {enrichment_info.fields_added})")
-            all_fields = [SearchField.TITLE, SearchField.DESCRIPTION, SearchField.KEYWORDS, SearchField.URL]
-            enriched_candidates, enriched_search_info = client.search_candidates(
-                metadata=metadata,
-                search_fields=all_fields,
-                max_candidates=body.max_candidates,
-                exclude_node_id=body.node_id
-            )
-            for field, field_candidates in enriched_candidates.items():
-                if field not in candidates:
-                    candidates[field] = field_candidates
-                else:
-                    existing_ids = {c.get("ref", {}).get("id") for c in candidates[field]}
-                    for c in field_candidates:
-                        if c.get("ref", {}).get("id") not in existing_ids:
-                            candidates[field].append(c)
-            for field, info in enriched_search_info.items():
-                if field not in search_info:
-                    search_info[field] = info
-    
-    total_candidates = count_candidates(candidates)
-    
-    # Find duplicates
-    try:
-        duplicates, field_similarities = embedding_detector.find_duplicates(
-            source_metadata=metadata,
-            candidates=candidates,
-            threshold=body.similarity_threshold
-        )
-    except RuntimeError as e:
-        return DetectionResponse(
-            success=False,
-            source_node_id=body.node_id,
-            source_metadata=metadata,
-            method="embedding",
-            threshold=body.similarity_threshold,
-            error=str(e)
-        )
-    
-    candidate_stats = build_candidate_stats(search_info, field_similarities)
-    
-    return DetectionResponse(
-        success=True,
-        source_node_id=body.node_id,
-        source_metadata=metadata,
-        method="embedding",
-        threshold=body.similarity_threshold,
-        enrichment=enrichment_info,
-        candidate_search_results=candidate_stats,
-        total_candidates_checked=total_candidates,
-        duplicates=duplicates
-    )
 
 
-@app.post(
-    "/detect/embedding/by-metadata",
-    response_model=DetectionResponse,
-    tags=["Embedding-basierte Erkennung"],
-    summary="Dublettenerkennung per Metadaten (Embedding)",
-    description="""
-Erkennt semantisch ähnliche Inhalte für einen neuen Inhalt anhand direkt eingegebener Metadaten.
 
-**Modell:** Konfigurierbar (siehe /health für aktuelles Modell)
-
-**Ideal für:**
-- Neue, noch nicht publizierte Inhalte
-- Vorab-Prüfung vor dem Import
-- Semantische Ähnlichkeitssuche
-
-**Schwellenwert:** 0.95 (Standard) bedeutet 95% semantische Ähnlichkeit.
-
-**Rate Limit:** 100 Requests pro Minute
-    """
-)
-@limiter.limit("100/minute")
-async def detect_embedding_by_metadata(request: Request, body: EmbeddingMetadataRequest):
-    """Embedding-based duplicate detection by metadata."""
-    logger.info(f"Embedding detection by metadata in {body.environment.value}")
-    
-    if not body.metadata.has_content():
-        return DetectionResponse(
-            success=False,
-            source_metadata=body.metadata,
-            method="embedding",
-            threshold=body.similarity_threshold,
-            error="No searchable content provided (need at least title, description, keywords, or URL)"
-        )
-    
-    # Resolve URL redirects if URL is provided and no redirect_url set yet
-    metadata = body.metadata
-    if metadata.url and not metadata.redirect_url:
-        final_url, was_redirected = resolve_url_redirect(metadata.url)
-        if was_redirected and final_url:
-            metadata = ContentMetadata(
-                title=metadata.title,
-                description=metadata.description,
-                keywords=metadata.keywords,
-                url=metadata.url,
-                redirect_url=final_url
-            )
-            logger.info(f"Resolved redirect for input URL: {metadata.url[:50]}... -> {final_url[:50]}...")
-    
-    # Search for candidates
-    client = WLOClient(environment=body.environment)
-    candidates, search_info = client.search_candidates(
-        metadata=metadata,
-        search_fields=body.search_fields,
-        max_candidates=body.max_candidates
-    )
-    
-    # Enrich metadata from candidates if enabled
-    enrichment_info = None
-    if body.enrich_from_candidates:
-        metadata, enrichment_info = enrich_metadata_from_candidates(metadata, candidates, client)
-        
-        if enrichment_info.enriched:
-            logger.info(f"Re-searching with enriched metadata (added: {enrichment_info.fields_added})")
-            all_fields = [SearchField.TITLE, SearchField.DESCRIPTION, SearchField.KEYWORDS, SearchField.URL]
-            enriched_candidates, enriched_search_info = client.search_candidates(
-                metadata=metadata,
-                search_fields=all_fields,
-                max_candidates=body.max_candidates
-            )
-            for field, field_candidates in enriched_candidates.items():
-                if field not in candidates:
-                    candidates[field] = field_candidates
-                else:
-                    existing_ids = {c.get("ref", {}).get("id") for c in candidates[field]}
-                    for c in field_candidates:
-                        if c.get("ref", {}).get("id") not in existing_ids:
-                            candidates[field].append(c)
-            for field, info in enriched_search_info.items():
-                if field not in search_info:
-                    search_info[field] = info
-    
-    total_candidates = count_candidates(candidates)
-    
-    # Find duplicates
-    try:
-        duplicates, field_similarities = embedding_detector.find_duplicates(
-            source_metadata=metadata,
-            candidates=candidates,
-            threshold=body.similarity_threshold
-        )
-    except RuntimeError as e:
-        return DetectionResponse(
-            success=False,
-            source_metadata=metadata,
-            method="embedding",
-            threshold=body.similarity_threshold,
-            error=str(e)
-        )
-    
-    candidate_stats = build_candidate_stats(search_info, field_similarities)
-    
-    return DetectionResponse(
-        success=True,
-        source_metadata=metadata,
-        method="embedding",
-        threshold=body.similarity_threshold,
-        enrichment=enrichment_info,
-        candidate_search_results=candidate_stats,
-        total_candidates_checked=total_candidates,
-        duplicates=duplicates
-    )
-
-
-# ============================================================================
-# Embedding Endpoints (for general use)
-# ============================================================================
-
-@app.post(
-    "/embed",
-    response_model=EmbeddingResponse,
-    tags=["Embeddings"],
-    summary="Text zu Embedding",
-    description="""
-Erzeugt einen Embedding-Vektor für einen Text.
-
-**Modell:** Konfigurierbar (siehe /health für aktuelles Modell)
-
-**Ausgabe:** 384-dimensionaler Vektor
-
-**Kein Rate Limit** - für intensive Nutzung geeignet.
-    """
-)
-async def create_embedding(body: EmbeddingRequest):
-    """Create embedding for a single text."""
-    logger.info(f"Embedding request for text ({len(body.text)} chars)")
-    
-    if not is_embedding_available():
-        return EmbeddingResponse(
-            success=False,
-            text=body.text,
-            embedding=[],
-            dimensions=0,
-            model="",
-            error="Embedding model not available"
-        )
-    
-    try:
-        embedding = embedding_detector.compute_embedding(body.text)
-        
-        if embedding is None:
-            return EmbeddingResponse(
-                success=False,
-                text=body.text,
-                embedding=[],
-                dimensions=0,
-                model=get_current_model_name(),
-                error="Could not compute embedding"
-            )
-        
-        return EmbeddingResponse(
-            success=True,
-            text=body.text,
-            embedding=embedding.tolist(),
-            dimensions=len(embedding),
-            model=get_current_model_name()
-        )
-    except Exception as e:
-        logger.error(f"Embedding failed: {e}")
-        return EmbeddingResponse(
-            success=False,
-            text=body.text,
-            embedding=[],
-            dimensions=0,
-            model=get_current_model_name(),
-            error=str(e)
-        )
-
-
-@app.post(
-    "/embed/batch",
-    response_model=EmbeddingBatchResponse,
-    tags=["Embeddings"],
-    summary="Batch Text zu Embeddings",
-    description="""
-Erzeugt Embedding-Vektoren für mehrere Texte gleichzeitig.
-
-**Modell:** Konfigurierbar (siehe /health für aktuelles Modell)
-
-**Ausgabe:** Liste von 384-dimensionalen Vektoren
-
-**Kein Rate Limit** - für intensive Nutzung geeignet.
-
-**Effizienter** als einzelne Aufrufe bei vielen Texten.
-    """
-)
-async def create_embeddings_batch(body: EmbeddingBatchRequest):
-    """Create embeddings for multiple texts."""
-    logger.info(f"Batch embedding request for {len(body.texts)} texts")
-    
-    if not is_embedding_available():
-        return EmbeddingBatchResponse(
-            success=False,
-            embeddings=[],
-            dimensions=0,
-            count=0,
-            model="",
-            error="Embedding model not available"
-        )
-    
-    try:
-        embeddings = embedding_detector.batch_compute_embeddings(body.texts)
-        
-        # Convert to lists and filter None values
-        result_embeddings = []
-        for emb in embeddings:
-            if emb is not None:
-                result_embeddings.append(emb.tolist())
-            else:
-                result_embeddings.append([])
-        
-        dimensions = len(result_embeddings[0]) if result_embeddings and result_embeddings[0] else 0
-        
-        return EmbeddingBatchResponse(
-            success=True,
-            embeddings=result_embeddings,
-            dimensions=dimensions,
-            count=len(result_embeddings),
-            model=get_current_model_name()
-        )
-    except Exception as e:
-        logger.error(f"Batch embedding failed: {e}")
-        return EmbeddingBatchResponse(
-            success=False,
-            embeddings=[],
-            dimensions=0,
-            count=0,
-            model=get_current_model_name(),
-            error=str(e)
-        )
 
 
 # ============================================================================
@@ -927,10 +574,6 @@ async def root():
         "endpoints": {
             "hash_by_node": "/detect/hash/by-node",
             "hash_by_metadata": "/detect/hash/by-metadata",
-            "embedding_by_node": "/detect/embedding/by-node",
-            "embedding_by_metadata": "/detect/embedding/by-metadata",
-            "embed": "/embed",
-            "embed_batch": "/embed/batch",
             "health": "/health"
         }
     }
