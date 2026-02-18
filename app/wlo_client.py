@@ -97,12 +97,6 @@ class WLOClient:
                 description = val[0] if isinstance(val, list) else val
                 break
         
-        # Extract keywords
-        keywords = None
-        if "cclom:general_keyword" in properties:
-            kw = properties["cclom:general_keyword"]
-            keywords = kw if isinstance(kw, list) else [kw]
-        
         # Extract URL
         url = None
         for key in ["ccm:wwwurl", "cclom:location"]:
@@ -122,7 +116,6 @@ class WLOClient:
         return ContentMetadata(
             title=title,
             description=description,
-            keywords=keywords,
             url=url,
             redirect_url=redirect_url
         )
@@ -211,14 +204,6 @@ class WLOClient:
         # Filter out common placeholder values from Swagger UI
         placeholders = {"string", ""}
         return value.strip().lower() not in placeholders and len(value.strip()) > 0
-    
-    def _is_valid_keywords(self, keywords: Optional[List[str]]) -> bool:
-        """Check if keywords list is valid (not empty or just placeholders)."""
-        if not keywords:
-            return False
-        # Filter out placeholder values
-        valid_keywords = [k for k in keywords if k and k.strip().lower() != "string"]
-        return len(valid_keywords) > 0
     
     def search_candidates(
         self,

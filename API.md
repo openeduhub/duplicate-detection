@@ -69,7 +69,7 @@ curl -X POST "http://localhost:8000/detect/hash/by-node" \
   -d '{
     "node_id": "12345678-1234-1234-1234-123456789abc",
     "similarity_threshold": 0.9,
-    "search_fields": ["title", "description", "keywords", "url"],
+    "search_fields": ["title", "description", "url"],
     "max_candidates": 100
   }'
 ```
@@ -80,7 +80,6 @@ curl -X POST "http://localhost:8000/detect/hash/by-node" \
   "source_metadata": {
     "title": "Islam - Wikipedia",
     "description": "Islam is an Abrahamic monotheistic religion...",
-    "keywords": ["religion", "islam", "faith"],
     "url": "https://en.wikipedia.org/wiki/Islam",
     "redirect_url": null
   },
@@ -116,7 +115,6 @@ curl -X POST "http://localhost:8000/detect/hash/by-node" \
       "node_id": "abc123-...",
       "title": "Islam",
       "description": null,
-      "keywords": null,
       "url": "https://en.wikipedia.org/wiki/Islam",
       "similarity_score": 1.0,
       "match_source": "url_exact"
@@ -125,7 +123,6 @@ curl -X POST "http://localhost:8000/detect/hash/by-node" \
       "node_id": "def456-...",
       "title": "Islamic Religion",
       "description": null,
-      "keywords": null,
       "url": "https://...",
       "similarity_score": 0.92,
       "match_source": "title"
@@ -157,7 +154,6 @@ Searches for duplicate content based on directly provided metadata. Ideal for ch
   "metadata": {
     "title": "string (optional)",
     "description": "string (optional)",
-    "keywords": ["string (optional)"],
     "url": "string (optional)"
   },
   "similarity_threshold": 0.9,
@@ -173,7 +169,6 @@ Searches for duplicate content based on directly provided metadata. Ideal for ch
 | `metadata` | object | required | Content metadata to check |
 | `metadata.title` | string | optional | Title of the content |
 | `metadata.description` | string | optional | Description text |
-| `metadata.keywords` | array | optional | List of keywords |
 | `metadata.url` | string | optional | Content URL |
 | `similarity_threshold` | float | 0.9 | Minimum similarity score (0-1) |
 | `search_fields` | array | `["title", "description", "url"]` | Metadata fields to use for search |
@@ -187,7 +182,6 @@ curl -X POST "http://localhost:8000/detect/hash/by-metadata" \
     "metadata": {
       "title": "Mathematik für Grundschüler",
       "description": "Lernen Sie die Grundlagen der Mathematik",
-      "keywords": ["Mathematik", "Grundschule", "Rechnen"],
       "url": "https://example.com/math"
     },
     "similarity_threshold": 0.9
@@ -215,7 +209,6 @@ The response from both detection endpoints follows this structure:
   "source_metadata": {
     "title": "string or null",
     "description": "string or null",
-    "keywords": ["string"] or null,
     "url": "string or null",
     "redirect_url": "string or null"
   },
@@ -242,7 +235,6 @@ The response from both detection endpoints follows this structure:
       "node_id": "string",
       "title": "string or null",
       "description": "string or null",
-      "keywords": ["string"] or null,
       "url": "string or null",
       "similarity_score": 0.95,
       "match_source": "string"
@@ -281,7 +273,7 @@ The response from both detection endpoints follows this structure:
 **duplicates:**
 - List of potential duplicates found
 - `node_id`: Node ID of the candidate
-- `title`, `description`, `keywords`, `url`: Metadata of the candidate
+- `title`, `description`, `url`: Metadata of the candidate
 - `similarity_score`: Similarity score (0-1)
 - `match_source`: Which search field found this candidate
 
@@ -321,7 +313,6 @@ Supported suffixes: Wikipedia, Klexikon, Wikibooks, planet-schule, Lehrer-Online
 | `url_exact` | Normalized URLs identical | **Always duplicate** |
 | `title` | Title-based match | Must be ≥ threshold |
 | `description` | Description match | Must be ≥ threshold |
-| `keywords` | Keyword match | Must be ≥ threshold |
 | `url` | URL search (not exact) | Must be ≥ threshold |
 
 ---
@@ -336,7 +327,6 @@ Supported suffixes: Wikipedia, Klexikon, Wikibooks, planet-schule, Lehrer-Online
 3. **Candidate Search** (with normalization):
    - `title`: Original + normalized (without publisher suffix)
    - `description`: Search in first 100 characters
-   - `keywords`: Search with combined keywords
    - `url`: Original + normalized (without protocol, www, query parameters)
 4. **URL Check** (has priority!):
    - All candidates are checked for URL match
@@ -370,7 +360,7 @@ Supported suffixes: Wikipedia, Klexikon, Wikibooks, planet-schule, Lehrer-Online
 **400 Bad Request - No searchable content**
 ```json
 {
-  "detail": "No searchable content provided (need at least title, description, keywords, or URL)"
+  "detail": "No searchable content provided (need at least title, description or URL)"
 }
 ```
 

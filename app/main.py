@@ -150,7 +150,7 @@ def get_metadata_from_node(node_id: str) -> tuple[ContentMetadata, str]:
     
     metadata = client.extract_content_metadata(node_data)
     if not metadata.has_content():
-        return None, f"Node {node_id} has no searchable content (no title, description, keywords, or URL)"
+        return None, f"Node {node_id} has no searchable content (no title, description or URL)"
     
     return metadata, None
 
@@ -239,13 +239,12 @@ def enrich_metadata_from_candidates(
     """
     enrichment_info = EnrichmentInfo(enriched=False)
     
-    # Check if metadata is already complete (has title AND (description OR keywords))
+    # Check if metadata is already complete (has title AND description)
     has_title = bool(metadata.title and metadata.title.strip() and metadata.title.strip().lower() != "string")
     has_description = bool(metadata.description and metadata.description.strip() and metadata.description.strip().lower() != "string")
-    has_keywords = bool(metadata.keywords and any(k and k.strip() and k.strip().lower() != "string" for k in metadata.keywords))
-    
+        
     # If we already have title + at least one other field, no need to enrich
-    if has_title and (has_description or has_keywords):
+    if has_title and has_description:
         logger.debug("Metadata already complete, skipping enrichment")
         return metadata, enrichment_info
     
@@ -322,7 +321,6 @@ def enrich_metadata_from_candidates(
     fields_added = []
     enriched_title = metadata.title
     enriched_description = metadata.description
-    enriched_keywords = metadata.keywords
     enriched_url = metadata.url
     enriched_redirect_url = metadata.redirect_url
     
@@ -334,10 +332,6 @@ def enrich_metadata_from_candidates(
         enriched_description = enrichment_metadata.description
         fields_added.append("description")
     
-    if not has_keywords and enrichment_metadata.keywords:
-        enriched_keywords = enrichment_metadata.keywords
-        fields_added.append("keywords")
-    
     # Add URL if we don't have one
     if not metadata.url and enrichment_metadata.url:
         enriched_url = enrichment_metadata.url
@@ -347,7 +341,6 @@ def enrich_metadata_from_candidates(
         enriched = ContentMetadata(
             title=enriched_title,
             description=enriched_description,
-            keywords=enriched_keywords,
             url=enriched_url,
             redirect_url=enriched_redirect_url
         )
@@ -429,7 +422,7 @@ async def detect_hash_by_node(request: Request, body: HashDetectionRequest):
     # If enriched, re-search with all fields to expand candidate pool
     if enrichment_info.fields_added:
         logger.info(f"Re-searching with enriched metadata (added: {enrichment_info.fields_added})")
-        all_fields = [SearchField.TITLE, SearchField.DESCRIPTION, SearchField.KEYWORDS, SearchField.URL]
+        all_fields = [SearchField.TITLE, SearchField.DESCRIPTION, SearchField.URL]
         enriched_candidates, enriched_search_info = client.search_candidates(
             metadata=metadata,
             search_fields=all_fields,
@@ -481,7 +474,6 @@ Erkennt Dubletten für einen neuen Inhalt anhand direkt eingegebener Metadaten.
 - `metadata` (object, erforderlich): Metadaten des zu prüfenden Inhalts
   - `title` (string, optional): Titel des Inhalts
   - `description` (string, optional): Beschreibungstext
-  - `keywords` (array[string], optional): Liste von Schlagwörtern
   - `url` (string, optional): URL des Inhalts
 - `similarity_threshold` (float, default: 0.9): Mindestähnlichkeit (0-1)
 - `search_fields` (array, default: ["title", "description", "url"]): Suchfelder
@@ -496,7 +488,7 @@ async def detect_hash_by_metadata(request: Request, body: HashMetadataRequest):
     if not body.metadata.has_content():
         raise HTTPException(
             status_code=400,
-            detail="No searchable content provided (need at least title, description, keywords, or URL)"
+            detail="No searchable content provided (need at least title, description or URL)"
         )
     
     # Resolve URL redirects if URL is provided and no redirect_url set yet
@@ -507,7 +499,6 @@ async def detect_hash_by_metadata(request: Request, body: HashMetadataRequest):
             metadata = ContentMetadata(
                 title=metadata.title,
                 description=metadata.description,
-                keywords=metadata.keywords,
                 url=metadata.url,
                 redirect_url=final_url
             )
@@ -528,7 +519,7 @@ async def detect_hash_by_metadata(request: Request, body: HashMetadataRequest):
     # If enriched, re-search with all fields to expand candidate pool
     if enrichment_info.fields_added:
         logger.info(f"Re-searching with enriched metadata (added: {enrichment_info.fields_added})")
-        all_fields = [SearchField.TITLE, SearchField.DESCRIPTION, SearchField.KEYWORDS, SearchField.URL]
+        all_fields = [SearchField.TITLE, SearchField.DESCRIPTION, SearchField.URL]
         enriched_candidates, enriched_search_info = client.search_candidates(
             metadata=metadata,
             search_fields=all_fields,

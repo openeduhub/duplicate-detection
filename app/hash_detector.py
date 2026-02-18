@@ -189,7 +189,6 @@ class MinHashDetector:
         # Determine which fields are available in source
         has_title = self._is_valid_field(source_metadata.title)
         has_description = self._is_valid_field(source_metadata.description)
-        has_keywords = False
         
         # Build source text from available fields only
         source_parts = []
@@ -240,7 +239,6 @@ class MinHashDetector:
                         description = val[0] if isinstance(val, list) else val
                         break
                 
-                keywords = None
                 url = None
                 for key in ["ccm:wwwurl", "cclom:location"]:
                     if key in properties:
@@ -274,8 +272,6 @@ class MinHashDetector:
                         candidate_parts.append(title)
                     if has_description and description:
                         candidate_parts.append(description)
-                    if has_keywords and keywords:
-                        candidate_parts.extend(keywords)
                     
                     logger.debug(f"Candidate data: {candidate_parts}")
                     candidate_text = " ".join(candidate_parts)
@@ -303,7 +299,6 @@ class MinHashDetector:
                         node_id=node_id,
                         title=title,
                         description=description,
-                        keywords=keywords,
                         url=url,
                         similarity_score=round(similarity, 4),
                         match_source=match_type

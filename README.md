@@ -101,7 +101,7 @@ curl -X POST "http://localhost:8000/detect/hash/by-node" \
   -d '{
     "node_id": "12345678-1234-1234-1234-123456789abc",
     "similarity_threshold": 0.9,
-    "search_fields": ["title", "description", "keywords", "url"],
+    "search_fields": ["title", "description", "url"],
     "max_candidates": 100
   }'
 ```
@@ -115,7 +115,6 @@ curl -X POST "http://localhost:8000/detect/hash/by-metadata" \
     "metadata": {
       "title": "Mathematik für Grundschüler",
       "description": "Lernen Sie die Grundlagen der Mathematik",
-      "keywords": ["Mathematik", "Grundschule", "Rechnen"],
       "url": "https://example.com/math"
     },
     "similarity_threshold": 0.9

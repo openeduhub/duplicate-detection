@@ -400,7 +400,6 @@ class ContentMetadata(BaseModel):
     """Content metadata for duplicate detection."""
     title: Optional[str] = Field(default=None, description="Title of the content")
     description: Optional[str] = Field(default=None, description="Description text")
-    keywords: Optional[List[str]] = Field(default=None, description="List of keywords")
     url: Optional[str] = Field(default=None, description="Content URL (ccm:wwwurl)")
     redirect_url: Optional[str] = Field(default=None, description="Resolved redirect URL (if different from url)")
     
@@ -430,13 +429,11 @@ class ContentMetadata(BaseModel):
             parts.append(self.title)
         if self.description:
             parts.append(self.description)
-        if self.keywords:
-            parts.append(" ".join(self.keywords))
         return " ".join(parts)
     
     def has_content(self) -> bool:
         """Check if there is any content to search with."""
-        return bool(self.title or self.description or self.keywords or self.url)
+        return bool(self.title or self.description or self.url)
 
 
 class DuplicateCandidate(BaseModel):
@@ -444,7 +441,6 @@ class DuplicateCandidate(BaseModel):
     node_id: str = Field(..., description="Node ID of the candidate")
     title: Optional[str] = Field(default=None, description="Title of the candidate")
     description: Optional[str] = Field(default=None, description="Description of the candidate")
-    keywords: Optional[List[str]] = Field(default=None, description="Keywords of the candidate")
     url: Optional[str] = Field(default=None, description="URL of the candidate")
     similarity_score: float = Field(..., description="Similarity score (0-1)")
     match_source: str = Field(..., description="Which search field found this candidate")
