@@ -12,6 +12,10 @@ from loguru import logger
 import sys
 
 from typing import List
+import hashlib
+import json
+import time
+from collections import OrderedDict
 from app.models import (
     HashDetectionRequest,
     HashMetadataRequest,
@@ -39,6 +43,11 @@ logger.add(
 
 # Rate limiter setup
 limiter = Limiter(key_func=get_remote_address, default_limits=[detection_config.rate_limit])
+
+# Detection response cache configuration (from environment variables or defaults)
+_detection_response_cache = OrderedDict()
+_detection_cache_ttl = detection_config.detection_cache_ttl
+_detection_cache_max_size = detection_config.detection_cache_max_size
 
 
 @asynccontextmanager
@@ -194,6 +203,27 @@ def build_candidate_stats(search_info: dict, field_similarities: dict = None) ->
             normalized_count=info.get("normalized_count")
         ))
     return stats
+
+
+def _get_detection_cache_key(metadata: ContentMetadata, threshold: float) -> str:
+    """
+    Create cache key from metadata and threshold.
+    
+    Args:
+        metadata: Content metadata
+        threshold: Similarity threshold
+        
+    Returns:
+        MD5 hash of metadata and threshold
+    """
+    key_data = {
+        "title": metadata.title,
+        "description": metadata.description,
+        "url": metadata.url,
+        "threshold": threshold
+    }
+    key_str = json.dumps(key_data, sort_keys=True)
+    return hashlib.md5(key_str.encode()).hexdigest()
 
 
 def get_effective_max_candidates(requested: int | None) -> int:
@@ -522,7 +552,7 @@ Erkennt Dubletten für einen neuen Inhalt anhand direkt eingegebener Metadaten.
 )
 @limiter.limit("100/minute")
 async def detect_hash_by_metadata(request: Request, body: HashMetadataRequest):
-    """Hash-based duplicate detection by metadata."""
+    """Hash-based duplicate detection by metadata with caching."""
     logger.info(f"Hash detection by metadata")
     
     # Validate metadata
@@ -545,23 +575,37 @@ async def detect_hash_by_metadata(request: Request, body: HashMetadataRequest):
             )
             logger.info(f"Resolved redirect for input URL: {metadata.url[:50]}... -> {final_url[:50]}...")
     
+    # Check cache
+    cache_key = _get_detection_cache_key(metadata, body.similarity_threshold)
+    if cache_key in _detection_response_cache:
+        cached_response, timestamp = _detection_response_cache[cache_key]
+        age = time.time() - timestamp
+        if age < _detection_cache_ttl:
+            logger.info(f"Detection cache hit (age: {age:.1f}s, key: {cache_key[:8]}...)")
+            return cached_response
+        else:
+            logger.debug(f"Detection cache expired (age: {age:.1f}s > {_detection_cache_ttl}s)")
+            del _detection_response_cache[cache_key]
+    
     # Perform hash detection with core logic
-    return await _perform_hash_detection(
+    response = await _perform_hash_detection(
         metadata=metadata,
         search_fields=body.search_fields,
         similarity_threshold=body.similarity_threshold,
         max_candidates=body.max_candidates,
         exclude_node_id=None
     )
-
-
-# ============================================================================
-# Embedding-Based Detection Endpoints
-# ============================================================================
-
-
-
-
+    
+    # Store in cache with size limit (FIFO eviction)
+    if len(_detection_response_cache) >= _detection_cache_max_size:
+        # Remove oldest entry
+        _detection_response_cache.popitem(last=False)
+        logger.debug(f"Detection cache evicted (size limit {_detection_cache_max_size} reached)")
+    
+    _detection_response_cache[cache_key] = (response, time.time())
+    logger.info(f"Detection result cached (key: {cache_key[:8]}..., cache size: {len(_detection_response_cache)}/{_detection_cache_max_size})")
+    
+    return response
 
 
 # ============================================================================

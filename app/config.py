@@ -49,6 +49,20 @@ class DetectionConfig(BaseModel):
         default=os.environ.get("RATE_LIMIT", "100/minute"),
         description="Rate limit for detection endpoints (set via RATE_LIMIT environment variable)"
     )
+    
+    # Detection response caching
+    detection_cache_ttl: int = Field(
+        default=int(os.environ.get("DETECTION_CACHE_TTL", "3600")),
+        ge=60,
+        le=86400,
+        description="Cache TTL for detection responses in seconds (set via DETECTION_CACHE_TTL environment variable, min: 60s, max: 24h)"
+    )
+    detection_cache_max_size: int = Field(
+        default=int(os.environ.get("DETECTION_CACHE_MAX_SIZE", "1000")),
+        ge=10,
+        le=10000,
+        description="Maximum number of cached detection responses (set via DETECTION_CACHE_MAX_SIZE environment variable, min: 10, max: 10000)"
+    )
 
 
 # Global config instances

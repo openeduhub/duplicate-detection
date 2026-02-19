@@ -62,6 +62,7 @@ class WLOClient:
                 params=params, 
                 timeout=wlo_config.default_timeout
             )
+            logger.info(f"Got metadata response for node {node_id}")
             response.raise_for_status()
             data = response.json()
             
@@ -321,7 +322,7 @@ class WLOClient:
                 
                 # Search with redirect URL in ccm:wwwurl if available
                 redirect_count = 0
-                if metadata.redirect_url:
+                if metadata.redirect_url and metadata.redirect_url != metadata.url:
                     redirect_results = self.search_by_ngsearch("ccm:wwwurl", metadata.redirect_url, max_candidates)
                     for result in redirect_results:
                         node_id = result.get("ref", {}).get("id")
