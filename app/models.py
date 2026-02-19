@@ -27,32 +27,24 @@ def normalize_title(title: Optional[str]) -> Optional[str]:
         return None
     
     title = title.strip()
+    if len(title) > 1000:
+        title = title[:1000]
     
     # Common suffixes to remove (case-insensitive patterns)
     suffixes = [
-        r'\s*[-–—|:]\s*Wikipedia.*$',
-        r'\s*[-–—|:]\s*Klexikon.*$',
-        r'\s*[-–—|:]\s*Wikibooks.*$',
-        r'\s*[-–—|:]\s*Wikiversity.*$',
-        r'\s*[-–—|:]\s*planet-schule.*$',
-        r'\s*[-–—|:]\s*Planet Schule.*$',
-        r'\s*[-–—|:]\s*Lehrer-Online.*$',
-        r'\s*[-–—|:]\s*Lernhelfer.*$',
-        r'\s*[-–—|:]\s*sofatutor.*$',
-        r'\s*[-–—|:]\s*learningapps.*$',
-        r'\s*[-–—|:]\s*serlo.*$',
-        r'\s*\([^)]*\.(de|com|org|net|edu)\)$',  # (example.de)
-        r'\s*\|\s*[^|]+$',  # | anything at the end
+        r'\s*[-–—|:]\s*(?:Wikipedia|Klexikon|Wikibooks|Wikiversity|planet-schule|Planet Schule|Lehrer-Online|Lernhelfer|sofatutor|learningapps|serlo)[^\n]{0,200}$',
+        r'\s*\([^)\n]{0,100}\.(?:de|com|org|net|edu)\)$',
+        r'\s*\|\s*[^|\n]{0,100}$',
     ]
     
     import re
     normalized = title
     for pattern in suffixes:
-        normalized = re.sub(pattern, '', normalized, flags=re.IGNORECASE)
-    
-    normalized = normalized.strip()
-    normalized = normalized.replace('&', ' ')
-    normalized = normalized.replace('  ', ' ')
+        try:
+            normalized = re.sub(pattern, '', normalized, flags=re.IGNORECASE)
+        except Exception as e:
+            logger.warning(f"Regex error: {e}")
+            break
     logger.debug(f"Normalized title: '{normalized}'")
     
     # Return None if normalized is empty or same as original
@@ -221,20 +213,23 @@ def generate_url_search_variants(url: Optional[str]) -> List[str]:
     """
     if not url or not url.strip():
         return []
+    url = url.strip()
     
+    if not url.startswith(('http://', 'https://')):
+        return []
+
     from urllib.parse import urlparse
     
-    url = url.strip()
     variants = set()
-    
+
     # Add original
     variants.add(url)
-    
+        
     try:
         parsed = urlparse(url.lower())
         host = parsed.netloc
         path = parsed.path.rstrip('/')
-        
+
         # YouTube: use specialized variant generation only
         if 'youtube.com' in host or 'youtu.be' in host:
             yt_variants = _generate_youtube_variants(url, parsed)
@@ -253,12 +248,13 @@ def generate_url_search_variants(url: Optional[str]) -> List[str]:
             for h in [base_host, www_host]:
                 variants.add(f"{protocol}{h}{path}")
                 variants.add(f"{protocol}{h}{path}/")  # with trailing slash
-        
+                
         # Also add without protocol (for ngsearchword)
         variants.add(f"{base_host}{path}")
         
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"Could not parse URL: {url}, {e}")
+        return []
     
     # Remove empty strings and return unique list
     return [v for v in variants if v and v.strip()]
@@ -359,13 +355,25 @@ def resolve_url_redirect(url: Optional[str], timeout: int = 10) -> Tuple[Optiona
     if not url.startswith(('http://', 'https://')):
         return None, False
     
+    # Blacklist internal IPs
+    BLOCKED_PATTERNS = [
+        '127.0.0.1', 'localhost', '0.0.0.0',
+        '169.254.169.254',  # AWS metadata
+        '10.', '172.16.', '192.168.',  # Private ranges
+    ]
+
+    parsed = urlparse(url)
+    for pattern in BLOCKED_PATTERNS:
+        if parsed.netloc.startswith(pattern):
+            logger.warning(f"Blocked internal URL: {url}")
+            return None, False
+
     try:
         # Use HEAD request to check for redirects (faster, no content download)
         response = requests.head(
             url, 
             allow_redirects=True, 
-            timeout=timeout,
-            headers={'User-Agent': 'Mozilla/5.0 (compatible; WLO-Duplicate-Detector/1.0)'}
+            timeout=timeout
         )
         
         final_url = response.url
@@ -398,9 +406,9 @@ class SearchField(str, Enum):
 
 class ContentMetadata(BaseModel):
     """Content metadata for duplicate detection."""
-    title: Optional[str] = Field(default=None, description="Title of the content")
-    description: Optional[str] = Field(default=None, description="Description text")
-    url: Optional[str] = Field(default=None, description="Content URL (ccm:wwwurl)")
+    title: Optional[str] = Field(default=None, max_lenght=400, description="Title of the content")
+    description: Optional[str] = Field(default=None, max_lenght=4000, description="Description text")
+    url: Optional[str] = Field(default=None, max_lenght=2048, description="Content URL (ccm:wwwurl)")
     redirect_url: Optional[str] = Field(default=None, description="Resolved redirect URL (if different from url)")
     
     @property
