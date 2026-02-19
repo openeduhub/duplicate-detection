@@ -13,7 +13,7 @@ class WLOConfig(BaseModel):
     )
     default_repository: str = Field(default="-home-")
     default_timeout: int = Field(
-        default=int(os.environ.get("WLO_TIMEOUT", "60")),
+        default=int(os.environ.get("WLO_TIMEOUT", "30")),
         description="Timeout for WLO API requests in seconds (set via WLO_TIMEOUT environment variable)"
     )
     max_retries: int = Field(

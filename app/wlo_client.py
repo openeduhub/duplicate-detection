@@ -57,13 +57,29 @@ class WLOClient:
         params = {"propertyFilter": "-all-"}
         
         try:
-            response = self.session.get(endpoint, params=params, timeout=wlo_config.default_timeout)
+            response = self.session.get(
+                endpoint, 
+                params=params, 
+                timeout=wlo_config.default_timeout
+            )
             response.raise_for_status()
             data = response.json()
             
             # The node data is in the 'node' field
             return data.get("node", data)
             
+        except requests.exceptions.Timeout:
+            logger.error(f"Timeout fetching {endpoint}")
+            return None
+        except requests.exceptions.ConnectionError:
+            logger.error(f"Connection error to WLO")
+            return None
+        except requests.exceptions.HTTPError as e:
+            if e.response.status_code == 404:
+                logger.debug(f"Node not found: {node_id}")
+            else:
+                logger.error(f"HTTP error: {e}")
+            return None
         except requests.exceptions.RequestException as e:
             logger.error(f"Failed to fetch metadata for node {node_id}: {e}")
             return None
@@ -323,7 +339,7 @@ class WLOClient:
                     if variant == metadata.url or variant == metadata.redirect_url:
                         continue  # Skip URLs already searched
                     
-                    variant_results = self.search_by_ngsearch("ngsearchword", variant, max_candidates // 2)
+                    variant_results = self.search_by_ngsearch("ccm:wwwurl", variant, max_candidates // 2)
                     new_in_variant = 0
                     for result in variant_results:
                         node_id = result.get("ref", {}).get("id")
