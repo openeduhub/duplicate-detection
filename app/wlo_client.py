@@ -214,13 +214,20 @@ class WLOClient:
         logger.debug(f"Total fetched for {search_property}: {len(all_nodes)} items")
         return all_nodes
     
-    def _is_valid_search_value(self, value: Optional[str]) -> bool:
+    def _is_valid_search_value(self, value: Optional[str], min_length: int = 3) -> bool:
         """Check if a search value is valid (not empty or placeholder)."""
-        if not value:
+        if not value or not isinstance(value, str):
             return False
-        # Filter out common placeholder values from Swagger UI
-        placeholders = {"string", ""}
-        return value.strip().lower() not in placeholders and len(value.strip()) > 0
+
+        value = value.strip()
+        if len(value) < min_length:
+            return False
+
+        # Filter placeholders
+        if value.lower() in {"string", "n/a", "unknown", ""}:
+            return False
+
+        return True
     
     def search_candidates(
         self,
