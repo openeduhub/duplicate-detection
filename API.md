@@ -34,7 +34,58 @@ Check the health status of the API.
 
 ---
 
-### 2. Detect Duplicates by Node ID
+### 2. Clear Cache (Admin)
+
+Clear all cached detection responses.
+
+**Endpoint:** `POST /admin/cache/clear`
+
+**Description:**
+Clears all cached responses from the `/detect/hash/by-metadata` endpoint. This is useful after:
+- Updates to the WLO database
+- Bugfixes in the detection logic
+- Performance issues due to large cache
+
+**Authentication:** Requires valid admin API key in `X-Admin-Key` header.
+
+**Request Headers:**
+
+| Header | Required | Description |
+|--------|----------|-------------|
+| `X-Admin-Key` | Yes | Admin API key (set via `ADMIN_API_KEY` environment variable) |
+
+**Example Request:**
+```bash
+curl -X POST "http://localhost:8000/admin/cache/clear" \
+  -H "X-Admin-Key: your-secret-admin-key"
+```
+
+**Response:**
+```json
+{
+  "status": "success",
+  "cleared_entries": 42,
+  "timestamp": 1708345235.123,
+  "message": "Successfully cleared 42 cache entries"
+}
+```
+
+**Status Codes:**
+- `200 OK` - Cache cleared successfully
+- `403 Forbidden` - Invalid or missing admin key
+- `500 Internal Server Error` - Admin key not configured
+
+**Response Fields:**
+- `status`: Always "success" on successful clear
+- `cleared_entries`: Number of cache entries that were removed
+- `timestamp`: Unix timestamp when cache was cleared
+- `message`: Human-readable message
+
+**Warning:** Clearing the cache will cause all subsequent requests to be recalculated, which may temporarily increase server load.
+
+---
+
+### 3. Detect Duplicates by Node ID
 
 Detect duplicates for existing WLO content by Node ID.
 

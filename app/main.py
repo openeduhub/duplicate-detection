@@ -10,11 +10,10 @@ from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 from loguru import logger
 import sys
-
+import os
 from typing import List
 import hashlib
 import json
-import time
 from collections import OrderedDict
 from app.models import (
     HashDetectionRequest,
@@ -34,11 +33,12 @@ from app.config import detection_config
 
 # Configure logging with JSON format for production
 logger.remove()
+log_level = os.environ.get("LOG_LEVEL", "INFO")
 logger.add(
     sys.stderr, 
-    level="DEBUG", 
+    level=log_level, 
     format="{time:YYYY-MM-DD HH:mm:ss} | {level:<8} | {message}",
-    colorize=True
+    colorize=False
 )
 
 # Rate limiter setup
@@ -267,7 +267,7 @@ def enrich_metadata_from_candidates(
     Returns:
         Tuple of (enriched_metadata, enrichment_info)
     """
-    enrichment_info = EnrichmentInfo(enriched=False)
+    enrichment_info = EnrichmentInfo()
     
     # Check if metadata is already complete (has title AND description)
     has_title = bool(metadata.title and metadata.title.strip() and metadata.title.strip().lower() != "string")
@@ -564,15 +564,19 @@ async def detect_hash_by_metadata(request: Request, body: HashMetadataRequest):
     # Resolve URL redirects if URL is provided and no redirect_url set yet
     metadata = body.metadata
     if metadata.url and not metadata.redirect_url:
-        final_url, was_redirected = resolve_url_redirect(metadata.url)
-        if was_redirected and final_url:
-            metadata = ContentMetadata(
-                title=metadata.title,
-                description=metadata.description,
-                url=metadata.url,
-                redirect_url=final_url
-            )
-            logger.info(f"Resolved redirect for input URL: {metadata.url[:50]}... -> {final_url[:50]}...")
+        try:
+            final_url, was_redirected = resolve_url_redirect(metadata.url)
+            if was_redirected and final_url:
+                metadata = ContentMetadata(
+                    title=metadata.title,
+                    description=metadata.description,
+                    url=metadata.url,
+                    redirect_url=final_url
+                )
+                logger.info(f"Resolved redirect for input URL: {metadata.url[:50]}... -> {final_url[:50]}...")
+        except Exception as e:
+            logger.warning(f"Failed to resolve redirect: {e}")
+
     
     # Check cache
     cache_key = _get_detection_cache_key(metadata, body.similarity_threshold)
@@ -585,6 +589,8 @@ async def detect_hash_by_metadata(request: Request, body: HashMetadataRequest):
         else:
             logger.debug(f"Detection cache expired (age: {age:.1f}s > {_detection_cache_ttl}s)")
             del _detection_response_cache[cache_key]
+    else:
+        logger.debug(f"Detection cache miss (key: {cache_key[:8]}...)")
     
     # Perform hash detection with core logic
     response = await _perform_hash_detection(
@@ -608,6 +614,61 @@ async def detect_hash_by_metadata(request: Request, body: HashMetadataRequest):
 
 
 # ============================================================================
+# Admin Endpoints
+# ============================================================================
+
+@app.post(
+    "/admin/cache/clear",
+    tags=["Admin"],
+    summary="Cache löschen",
+    description="""
+Löscht alle gecachten Detection-Responses.
+
+**Authentifizierung:** Erfordert gültigen Admin-API-Key im Header `X-Admin-Key`.
+
+**Verwendungsfall:**
+- Nach Updates in der WLO-Datenbank
+- Nach Bugfixes in der Detection-Logik
+- Bei Performance-Problemen durch zu großen Cache
+
+**Warnung:** Dies löscht ALLE Cache-Einträge und kann zu erhöhter Last führen,
+da alle Requests neu berechnet werden müssen.
+    """
+)
+async def clear_cache(x_admin_key: str = None):
+    """
+    Clear all cached detection responses.
+    
+    Requires valid admin API key in X-Admin-Key header.
+    """
+    # Verify admin key
+    expected_key = os.environ.get("ADMIN_API_KEY")
+    
+    # If no admin key is configured, deny access
+    if not expected_key:
+        logger.error("ADMIN_API_KEY not configured")
+        raise HTTPException(status_code=500, detail="Admin key not configured")
+    
+    # Check if key is provided and matches
+    if not x_admin_key or x_admin_key != expected_key:
+        logger.warning(f"Unauthorized admin access attempt (key provided: {bool(x_admin_key)})")
+        raise HTTPException(status_code=403, detail="Invalid or missing admin key")
+    
+    # Clear cache
+    cleared_count = len(_detection_response_cache)
+    _detection_response_cache.clear()
+    
+    logger.warning(f"Cache cleared by admin: {cleared_count} entries removed")
+    
+    return {
+        "status": "success",
+        "cleared_entries": cleared_count,
+        "timestamp": time.time(),
+        "message": f"Successfully cleared {cleared_count} cache entries"
+    }
+
+
+# ============================================================================
 # Root Endpoint
 # ============================================================================
 
@@ -627,7 +688,8 @@ async def root():
         "endpoints": {
             "hash_by_node": "/detect/hash/by-node",
             "hash_by_metadata": "/detect/hash/by-metadata",
-            "health": "/health"
+            "health": "/health",
+            "admin_cache_clear": "/admin/cache/clear (requires ADMIN_API_KEY)"
         }
     }
 

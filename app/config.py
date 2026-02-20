@@ -13,12 +13,16 @@ class WLOConfig(BaseModel):
     )
     default_repository: str = Field(default="-home-")
     default_timeout: int = Field(
-        default=int(os.environ.get("WLO_TIMEOUT", "30")),
-        description="Timeout for WLO API requests in seconds (set via WLO_TIMEOUT environment variable)"
+        default=int(os.environ.get("WLO_TIMEOUT", "10")),
+        ge=5,
+        le=60,
+        description="Timeout for WLO API requests in seconds (5-60, default: 10; set via WLO_TIMEOUT environment variable)"
     )
     max_retries: int = Field(
         default=int(os.environ.get("WLO_MAX_RETRIES", "3")),
-        description="Maximum number of retries for WLO API requests (set via WLO_MAX_RETRIES environment variable)"
+        ge=0,
+        le=10,
+        description="Maximum number of retries for WLO API requests (0-10, default: 3; set via WLO_MAX_RETRIES environment variable)"
     )
     
     def get_base_url(self) -> str:

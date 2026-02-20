@@ -84,6 +84,9 @@ class WLOClient:
         except requests.exceptions.RequestException as e:
             logger.error(f"Failed to fetch metadata for node {node_id}: {e}")
             return None
+        except ValueError as e:
+            logger.error(f"Invalid JSON response: {e}")
+            return None
     
     def extract_content_metadata(self, node_data: Dict[str, Any], resolve_redirects: bool = True) -> ContentMetadata:
         """
@@ -166,10 +169,12 @@ class WLOClient:
         }
         
         all_nodes = []
-        page_size = 100  # Standard page size
+        page_size = 100  # elements on a page
+        MAX_PAGINATION_ITERATIONS = 20  # number of pages
         skip_count = 0
-        
-        while len(all_nodes) < max_items:
+        iteration = 0
+        while len(all_nodes) < max_items and iteration < MAX_PAGINATION_ITERATIONS:
+            iteration += 1
             # Calculate how many items to fetch in this page
             remaining = max_items - len(all_nodes)
             current_page_size = min(page_size, remaining)
@@ -300,7 +305,8 @@ class WLOClient:
                 
             elif field == SearchField.DESCRIPTION and self._is_valid_search_value(metadata.description):
                 # Search by description - use first 100 chars for efficiency
-                search_value = metadata.description[:100] if len(metadata.description) > 100 else metadata.description
+                DESCRIPTION_SEARCH_LENGTH = 100
+                search_value = metadata.description[:DESCRIPTION_SEARCH_LENGTH] if len(metadata.description) > DESCRIPTION_SEARCH_LENGTH else metadata.description
                 results = self.search_by_ngsearch("ngsearchword", search_value, max_candidates)
                 field_candidates.extend(results)
                    

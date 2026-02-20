@@ -48,6 +48,9 @@
 | `MAX_CANDIDATES` | `40` | Maximum candidates per search field (cannot be exceeded by client) |
 | `RATE_LIMIT` | `100/minute` | Rate limit for detection endpoints |
 | `LOG_LEVEL` | `INFO` | Log level (DEBUG, INFO, WARNING, ERROR) |
+| `DETECTION_CACHE_TTL` | `3600` | Cache TTL for detection responses in seconds (60-86400) |
+| `DETECTION_CACHE_MAX_SIZE` | `1000` | Maximum number of cached detection responses (10-10000) |
+| `ADMIN_API_KEY` | (not set) | **Required for admin endpoints** - Secret key for cache management |
 
 ### Example for Kubernetes Deployment
 
@@ -655,6 +658,112 @@ kubectl rollout undo deployment/duplicate-detection
 
 ---
 
+## Cache Management
+
+### Overview
+
+The service includes automatic response caching for the `/detect/hash/by-metadata` endpoint to improve performance for repeated requests.
+
+**Cache Behavior:**
+- Responses are cached in memory based on metadata and similarity threshold
+- Cache entries expire after `DETECTION_CACHE_TTL` seconds (default: 1 hour)
+- When cache reaches `DETECTION_CACHE_MAX_SIZE` entries, oldest entries are removed (FIFO)
+- Cache is cleared on service restart
+
+### Configuration
+
+Set these environment variables to control caching:
+
+```bash
+# Cache TTL (time-to-live) in seconds
+export DETECTION_CACHE_TTL=3600        # 1 hour (default)
+export DETECTION_CACHE_TTL=7200        # 2 hours (longer caching)
+export DETECTION_CACHE_TTL=1800        # 30 minutes (shorter caching)
+
+# Maximum number of cached responses
+export DETECTION_CACHE_MAX_SIZE=1000   # 1000 entries (default)
+export DETECTION_CACHE_MAX_SIZE=500    # 500 entries (smaller deployments)
+export DETECTION_CACHE_MAX_SIZE=5000   # 5000 entries (larger deployments)
+```
+
+### Memory Impact
+
+- **Per cached response:** ~20-30 KB (average), up to 100 KB (worst case)
+- **Total cache memory:** `DETECTION_CACHE_MAX_SIZE` × average response size
+- **Example:** 1000 entries × 25 KB = ~25 MB RAM
+
+### Recommended Settings by Deployment Size
+
+| Deployment Size | Cache Size | TTL | Expected RAM |
+|-----------------|-----------|-----|--------------|
+| Small (< 2 GB) | 500 | 1800s | 10-15 MB |
+| Medium (2-8 GB) | 1000 | 3600s | 20-30 MB |
+| Large (> 8 GB) | 5000 | 7200s | 100-150 MB |
+
+### Clearing the Cache
+
+The service provides an admin endpoint to clear the cache:
+
+```
+POST /admin/cache/clear
+X-Admin-Key: <your-admin-key>
+```
+
+**When to clear the cache:**
+- After updates to the WLO database
+- After bugfixes in the detection logic
+- When experiencing memory issues
+- During maintenance windows
+
+**Setup:**
+
+1. **Set the admin API key:**
+   ```bash
+   export ADMIN_API_KEY="your-secret-admin-key"
+   ```
+
+2. **Clear the cache:**
+   ```bash
+   curl -X POST "http://localhost:8000/admin/cache/clear" \
+     -H "X-Admin-Key: your-secret-admin-key"
+   ```
+
+3. **Response:**
+   ```json
+   {
+     "status": "success",
+     "cleared_entries": 42,
+     "timestamp": 1708345235.123,
+     "message": "Successfully cleared 42 cache entries"
+   }
+   ```
+
+**Security:**
+- The `ADMIN_API_KEY` environment variable **must be set** for the endpoint to work
+- Without it, the endpoint returns HTTP 500
+- Invalid keys return HTTP 403
+- All access attempts are logged
+- **Recommendation:** Use a strong, randomly generated key
+
+**Kubernetes Example:**
+
+```yaml
+env:
+- name: ADMIN_API_KEY
+  valueFrom:
+    secretKeyRef:
+      name: duplicate-detection-secrets
+      key: admin-api-key
+```
+
+Create the secret:
+```bash
+kubectl create secret generic duplicate-detection-secrets \
+  --from-literal=admin-api-key=$(openssl rand -base64 32)
+```
+
+---
+
 ## Production Deployment Checklist
 
 - [ ] WLO_BASE_URL configured and tested
@@ -671,3 +780,6 @@ kubectl rollout undo deployment/duplicate-detection
 - [ ] Security audit performed
 - [ ] Documentation updated
 - [ ] Team training completed
+- [ ] **ADMIN_API_KEY configured for cache management**
+- [ ] Cache settings tuned for deployment size
+- [ ] Cache clearing procedure documented

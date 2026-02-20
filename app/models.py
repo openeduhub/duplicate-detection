@@ -333,7 +333,7 @@ def _generate_youtube_variants(url: str, parsed) -> List[str]:
     return variants
 
 
-def resolve_url_redirect(url: Optional[str], timeout: int = 10) -> Tuple[Optional[str], bool]:
+def resolve_url_redirect(url: Optional[str], timeout: int = 5) -> Tuple[Optional[str], bool]:
     """
     Resolve URL redirects by following the redirect chain.
     
@@ -406,9 +406,9 @@ class SearchField(str, Enum):
 
 class ContentMetadata(BaseModel):
     """Content metadata for duplicate detection."""
-    title: Optional[str] = Field(default=None, max_lenght=400, description="Title of the content")
-    description: Optional[str] = Field(default=None, max_lenght=4000, description="Description text")
-    url: Optional[str] = Field(default=None, max_lenght=2048, description="Content URL (ccm:wwwurl)")
+    title: Optional[str] = Field(default=None, max_length=400, description="Title of the content")
+    description: Optional[str] = Field(default=None, max_length=4000, description="Description text")
+    url: Optional[str] = Field(default=None, max_length=2048, description="Content URL (ccm:wwwurl)")
     redirect_url: Optional[str] = Field(default=None, description="Resolved redirect URL (if different from url)")
     
     @property
