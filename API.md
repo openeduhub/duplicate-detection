@@ -389,25 +389,85 @@ When rate limit is exceeded, the API returns HTTP 429 with the error message abo
 
 ---
 
+## Caching
+
+### How Caching Works
+
+The `/detect/hash/by-metadata` endpoint includes automatic response caching to improve performance for repeated requests.
+
+**Cache Key:** Generated from metadata (title, description, URL) and similarity threshold
+- Same metadata + same threshold = cache hit
+- Different metadata or threshold = cache miss
+
+**Cache Behavior:**
+- Responses are cached in memory
+- Cache entries expire after `DETECTION_CACHE_TTL` seconds (default: 1 hour)
+- When cache reaches `DETECTION_CACHE_MAX_SIZE` entries, oldest entries are removed
+- Cache is cleared when the service restarts
+
+**For Users:**
+
+If you're checking the same content multiple times, you'll see significant performance improvements:
+
+```
+First request:  2-5 seconds (full detection)
+Second request: <10ms (cache hit!)
+```
+
+Check the logs for "Detection cache hit" messages to verify caching is working.
+
+**For Infrastructure Admins:**
+
+Configure caching via environment variables:
+
+```bash
+# Cache TTL (time-to-live) in seconds
+export DETECTION_CACHE_TTL=3600        # 1 hour (default)
+export DETECTION_CACHE_TTL=7200        # 2 hours (for longer caching)
+export DETECTION_CACHE_TTL=1800        # 30 minutes (for shorter caching)
+
+# Maximum number of cached responses
+export DETECTION_CACHE_MAX_SIZE=1000   # 1000 entries (default)
+export DETECTION_CACHE_MAX_SIZE=500    # 500 entries (smaller deployments)
+export DETECTION_CACHE_MAX_SIZE=5000   # 5000 entries (larger deployments)
+```
+
+**Memory Impact:**
+
+- Per cached response: ~20-30 KB (average), up to 100 KB (worst case)
+- Total cache memory = `DETECTION_CACHE_MAX_SIZE` × average response size
+- Example: 1000 entries × 25 KB = ~25 MB RAM
+
+**Recommended Settings:**
+
+| Deployment Size | Cache Size | TTL | Expected RAM |
+|-----------------|-----------|-----|--------------|
+| Small (< 2 GB) | 500 | 1800s | 10-15 MB |
+| Medium (2-8 GB) | 1000 | 3600s | 20-30 MB |
+| Large (> 8 GB) | 5000 | 7200s | 100-150 MB |
+
+---
+
 ## Performance Considerations
 
 ### Response Times
 
-| Scenario | Typical Time |
-|----------|------------|
-| Health check | <10ms |
-| Small metadata (title only) | 500ms - 1s |
-| Medium metadata (title + description) | 1s - 3s |
-| Large metadata (all fields) | 3s - 10s |
+| Scenario | Typical Time | With Cache |
+|----------|------------|-----------|
+| Health check | <10ms | <10ms |
+| Small metadata (title only) | 500ms - 1s | <10ms (hit) |
+| Medium metadata (title + description) | 1s - 3s | <10ms (hit) |
+| Large metadata (all fields) | 3s - 10s | <10ms (hit) |
 
-*Times depend on WLO repository size and network latency.*
+*Times depend on WLO repository size and network latency. Cache hits are nearly instant.*
 
 ### Optimization Tips
 
-1. **Reduce max_candidates**: Lower values = faster responses
-2. **Use specific search_fields**: Only search fields with content
-3. **Increase similarity_threshold**: Fewer matches = faster processing
-4. **Batch requests**: Use multiple requests instead of one large request
+1. **Leverage caching**: Repeated requests benefit from cache hits
+2. **Reduce max_candidates**: Lower values = faster responses
+3. **Use specific search_fields**: Only search fields with content
+4. **Increase similarity_threshold**: Fewer matches = faster processing
+5. **Monitor cache**: Check logs for cache hit rate to verify effectiveness
 
 ---
 

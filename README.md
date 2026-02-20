@@ -75,17 +75,63 @@ docker-compose down
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `WLO_BASE_URL` | `https://repository.staging.openeduhub.net/edu-sharing/rest` | Base URL of the WLO REST API |
-| `LOG_LEVEL` | `INFO` | Logging level (DEBUG, INFO, WARNING, ERROR) |
+| `WLO_TIMEOUT` | `30` | Timeout for WLO API requests in seconds |
+| `WLO_MAX_RETRIES` | `3` | Maximum number of retries for WLO API requests |
+| `MAX_CANDIDATES` | `40` | Maximum candidates per search field (1-1000) |
+| `RATE_LIMIT` | `100/minute` | Rate limit for detection endpoints |
+| `DETECTION_CACHE_TTL` | `3600` | Cache TTL for detection responses in seconds (60-86400) |
+| `DETECTION_CACHE_MAX_SIZE` | `1000` | Maximum number of cached detection responses (10-10000) |
 
 ### Example Configuration
 
 ```bash
 # Production setup with custom WLO instance
 export WLO_BASE_URL="https://redaktion.openeduhub.net/edu-sharing/rest"
-export LOG_LEVEL="INFO"
+export WLO_TIMEOUT="30"
+export MAX_CANDIDATES="40"
+export DETECTION_CACHE_TTL="3600"
+export DETECTION_CACHE_MAX_SIZE="1000"
 
 python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
+
+### Caching Configuration
+
+The API includes response caching for the `/detect/hash/by-metadata` endpoint to improve performance for repeated requests.
+
+**Cache Behavior:**
+- Responses are cached based on metadata (title, description, URL) and similarity threshold
+- Cache entries expire after `DETECTION_CACHE_TTL` seconds (default: 1 hour)
+- When cache is full, oldest entries are removed (FIFO eviction)
+- Cache is stored in memory and cleared on service restart
+
+**For Infrastructure Admins:**
+
+Adjust cache settings based on your deployment:
+
+```bash
+# Small deployments (< 2 GB RAM)
+export DETECTION_CACHE_MAX_SIZE=500      # ~10-15 MB RAM
+export DETECTION_CACHE_TTL=1800          # 30 minutes
+
+# Medium deployments (2-8 GB RAM) - Default
+export DETECTION_CACHE_MAX_SIZE=1000     # ~20-30 MB RAM
+export DETECTION_CACHE_TTL=3600          # 1 hour
+
+# Large deployments (> 8 GB RAM)
+export DETECTION_CACHE_MAX_SIZE=5000     # ~100-150 MB RAM
+export DETECTION_CACHE_TTL=7200          # 2 hours
+```
+
+**Memory Estimation:**
+- Per cached response: ~20-30 KB (average), up to 100 KB (worst case with many duplicates)
+- Cache size = `DETECTION_CACHE_MAX_SIZE` × average response size
+- Example: 1000 entries × 25 KB = ~25 MB RAM
+
+**Monitoring Cache:**
+- Check logs for "Detection cache hit" messages to verify caching is working
+- Monitor memory usage to ensure cache doesn't exceed available resources
+- Adjust `DETECTION_CACHE_MAX_SIZE` if memory usage is too high
 
 ## API Documentation
 
