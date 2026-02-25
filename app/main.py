@@ -457,7 +457,7 @@ async def _perform_hash_detection(
         enriched_candidates, enriched_search_info = client.search_candidates(
             metadata=metadata,
             search_fields=all_fields,
-            max_candidates=max_candidates,
+            max_candidates=effective_max_candidates,
             exclude_node_id=exclude_node_id
         )
         # Merge candidates (enriched search may find more)
