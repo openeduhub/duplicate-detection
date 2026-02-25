@@ -9,6 +9,7 @@ services:
     environment:
       # Optional: Log level
       LOG_LEVEL: DEBUG
+      MAX_CANDIDATES: "40"
     volumes:
       # Optional: Mount cache directory for model persistence
       - model-cache:/home/appuser/.cache
